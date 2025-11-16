@@ -54,6 +54,7 @@ logs/
 # Backup test data
 data/encrypted/
 data/restored/
+data/original/
 
 # =========================
 # TERRAFORM
@@ -102,6 +103,3 @@ docs/demo_screenshot_*.png
 .aws/credentials
 aws_access_keys.txt
 aws_secret.txt
-
-# Never commit data
-data/
