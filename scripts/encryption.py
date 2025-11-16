@@ -1,215 +1,162 @@
 import os
 import glob
 import time
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+import json
+import hashlib
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
-# =========================
-# CONFIG
-# =========================
-KEY_DIR = "../keys"
-DATA_DIR = "../data"
-AES_KEY_SIZE = 32  # 256-bit AES key
-IV_SIZE = 16       # 128-bit IV (nonce)
+from encryption_config import (
+    AES_KEY_SIZE,
+    NONCE_SIZE,
+    TAG_SIZE,
+    CHUNK_SIZE,
+    KEY_DIR,
+    DATA_DIR,
+)
 
+from rsa_utils import load_rsa_keys, generate_rsa_keys
+from logging_config import encryption_logger, error_logger
 
-# =========================
-# 1️⃣ TẠO CẶP KHÓA RSA (Public/Private)
-# =========================
-def generate_rsa_keys():
-    private_key = rsa.generate_private_key(
-        public_exponent=65537, key_size=2048, backend=default_backend()
-    )
-    public_key = private_key.public_key()
-
-    os.makedirs(KEY_DIR, exist_ok=True)
-
-    with open(f"{KEY_DIR}/rsa_private.pem", "wb") as f:
-        f.write(
-            private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
-        )
-
-    with open(f"{KEY_DIR}/rsa_public.pem", "wb") as f:
-        f.write(
-            public_key.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-        )
-
-    print("Generated RSA key pair (rsa_private.pem, rsa_public.pem)")
+# ============================================================
+# SHA256 CHECKSUM
+# ============================================================
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
-# =========================
-# 2️⃣ TẢI KHÓA RSA TỪ FILE
-# =========================
-def load_rsa_keys():
-    with open(f"{KEY_DIR}/rsa_private.pem", "rb") as f:
-        private_key = serialization.load_pem_private_key(
-            f.read(), password=None, backend=default_backend()
-        )
-    with open(f"{KEY_DIR}/rsa_public.pem", "rb") as f:
-        public_key = serialization.load_pem_public_key(f.read(), backend=default_backend())
-    return private_key, public_key
-
-
-# =========================
-# 3️⃣ MÃ HÓA 1 FILE (AES + RSA)
-# =========================
+# ============================================================
+# 1) STREAMING AES-GCM ENCRYPTION (WITH CHECKSUM)
+# ============================================================
 def encrypt_file(input_path, encrypted_path, encrypted_key_path):
-    from os import urandom
-    start_time = time.perf_counter()
+    start = time.perf_counter()
+    encryption_logger.info(f"START encrypt | file={input_path}")
 
-    aes_key = urandom(AES_KEY_SIZE)
-    iv = urandom(IV_SIZE)
+    try:
+        # 1️⃣ Generate AES key + nonce
+        aes_key = os.urandom(AES_KEY_SIZE)
+        nonce = os.urandom(NONCE_SIZE)
 
-    with open(input_path, "rb") as f:
-        plaintext = f.read()
+        cipher = Cipher(
+            algorithms.AES(aes_key),
+            modes.GCM(nonce),
+        )
+        encryptor = cipher.encryptor()
 
-    cipher = Cipher(algorithms.AES(aes_key), modes.CTR(iv), backend=default_backend())
-    encryptor = cipher.encryptor()
-    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        # 2️⃣ Re-wrap AES key using RSA public key
+        _, public_key = load_rsa_keys()
+        encrypted_aes_key = public_key.encrypt(
+            aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
 
-    # Mã hóa AES key bằng RSA public key
-    _, public_key = load_rsa_keys()
-    encrypted_aes_key = public_key.encrypt(
-        aes_key,
-        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
-    )
+        # 3️⃣ Streaming encryption
+        os.makedirs(os.path.dirname(encrypted_path), exist_ok=True)
 
-    os.makedirs(os.path.dirname(encrypted_path), exist_ok=True)
-    with open(encrypted_path, "wb") as f:
-        f.write(iv + ciphertext)  # prepend IV
+        with open(input_path, "rb") as fin, open(encrypted_path, "wb") as fout:
 
-    with open(encrypted_key_path, "wb") as f:
-        f.write(encrypted_aes_key)
+            fout.write(nonce)                 # Write NONCE
+            fout.write(b"\x00" * TAG_SIZE)    # Placeholder for TAG
 
-    end_time = time.perf_counter()
-    elapsed_time = end_time - start_time
+            while chunk := fin.read(CHUNK_SIZE):
+                ct = encryptor.update(chunk)
+                if ct:
+                    fout.write(ct)
 
-    print(f"Encrypted: {os.path.basename(input_path)} in {elapsed_time:.2f} seconds")
-    print(f"   → Data: {encrypted_path}")
-    print(f"   → AES key (encrypted): {encrypted_key_path}")
+            final_ct = encryptor.finalize()
+            if final_ct:
+                fout.write(final_ct)
+
+            tag = encryptor.tag
+
+            # Write TAG back into placeholder
+            fout.seek(NONCE_SIZE)
+            fout.write(tag)
+
+        # 4️⃣ Save RSA-encrypted AES key
+        with open(encrypted_key_path, "wb") as f:
+            f.write(encrypted_aes_key)
+
+        # 5️⃣ Calculate SHA256 checksum of encrypted file
+        checksum = sha256_file(encrypted_path)
+        metadata_path = encrypted_path.replace(".enc", ".metadata.json")
+
+        metadata = {
+            "ciphertext_sha256": checksum,
+            "nonce": nonce.hex(),
+            "tag": tag.hex(),
+        }
+
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=4)
+
+        elapsed = time.perf_counter() - start
+        encryption_logger.info(
+            f"SUCCESS encrypt | file={input_path} | output={encrypted_path} | key={encrypted_key_path} | checksum={checksum} | time={elapsed:.2f}s"
+        )
+        print(f"[Encrypted OK] {input_path} → {encrypted_path} in {elapsed:.2f}s")
+
+    except Exception as e:
+        elapsed = time.perf_counter() - start
+        error_logger.error(
+            f"FAIL encrypt | file={input_path} | err={str(e)} | time={elapsed:.2f}s"
+        )
+        print(f"[ERROR] Encryption failed for {input_path} → {str(e)}")
+        raise
 
 
-# =========================
-# 4️⃣ GIẢI MÃ 1 FILE (RSA + AES)
-# =========================
-def decrypt_file(encrypted_path, encrypted_key_path, output_path):
-    start_time = time.perf_counter()
-    private_key, _ = load_rsa_keys()
-
-    with open(encrypted_key_path, "rb") as f:
-        encrypted_aes_key = f.read()
-
-    aes_key = private_key.decrypt(
-        encrypted_aes_key,
-        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
-    )
-
-    with open(encrypted_path, "rb") as f:
-        data = f.read()
-        iv, ciphertext = data[:IV_SIZE], data[IV_SIZE:]
-
-    cipher = Cipher(algorithms.AES(aes_key), modes.CTR(iv), backend=default_backend())
-    decryptor = cipher.decryptor()
-    plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "wb") as f:
-        f.write(plaintext)
-
-    elapsed = time.perf_counter() - start_time
-    print(f"Thời gian giải mã: {elapsed:.3f} giây")
-
-    print(f"Decrypted: {os.path.basename(encrypted_path)} → {output_path}")
-
-
-# =========================
-# 5️⃣ MÃ HÓA TOÀN BỘ FILE TRONG THƯ MỤC
-# =========================
+# ============================================================
+# 2) ENCRYPT ALL FILES IN A FOLDER
+# ============================================================
 def encrypt_all_in_folder(input_folder, encrypted_folder):
     os.makedirs(encrypted_folder, exist_ok=True)
-    files = [f for f in glob.glob(os.path.join(input_folder, "**/*.*"), recursive=True)]
 
-    if not files:
-        print("Không có file nào trong thư mục:", input_folder)
-        return
+    files = glob.glob(os.path.join(input_folder, "**/*"), recursive=True)
+    files = [f for f in files if os.path.isfile(f)]
 
-    print(f"Bắt đầu mã hóa {len(files)} file trong {input_folder} ...")
+    print(f"Found {len(files)} files. Starting encryption…")
+
     for file_path in files:
-        file_name = os.path.basename(file_path)
-        encrypted_path = os.path.join(encrypted_folder, f"{file_name}.enc")
-        encrypted_key_path = os.path.join(encrypted_folder, f"{file_name}.key.enc")
-        try:
-            encrypt_file(file_path, encrypted_path, encrypted_key_path)
-        except Exception as e:
-            print(f"Error when encrypting {file_name}: {e}")
-    print("Completed encrypting all files.")
+        name = os.path.basename(file_path)
+        enc_path = os.path.join(encrypted_folder, f"{name}.enc")
+        key_path = os.path.join(encrypted_folder, f"{name}.key.enc")
+
+        encrypt_file(file_path, enc_path, key_path)
+
+    print("✔ Done encrypting all files.")
 
 
-# =========================
-# 6️⃣ DECRYPT ALL FILES IN FOLDER
-# =========================
-def decrypt_all_in_folder(encrypted_folder, restored_folder):
-    os.makedirs(restored_folder, exist_ok=True)
-    enc_files = glob.glob(os.path.join(encrypted_folder, "*.enc"))
-
-    if not enc_files:
-        print("No encrypted files in:", encrypted_folder)
-        return
-
-    print(f"Starting to decrypt {len(enc_files)} files in {encrypted_folder} ...")
-    for enc_file in enc_files:
-        base_name = os.path.basename(enc_file).replace(".enc", "")
-        enc_key_file = os.path.join(encrypted_folder, f"{base_name}.key.enc")
-        output_path = os.path.join(restored_folder, base_name)
-
-        if not os.path.exists(enc_key_file):
-            print(f"Skipping {base_name}: key file not found.")
-            continue
-
-        try:
-            decrypt_file(enc_file, enc_key_file, output_path)
-        except Exception as e:
-            print(f"Error when decrypting {base_name}: {e}")
-
-    print("Completed decrypting all files.")
-
-
-# =========================
-# 7️⃣ MAIN – CHẠY TRỰC TIẾP
-# =========================
+# ============================================================
+# 3) MAIN ENTRYPOINT
+# ============================================================
 if __name__ == "__main__":
     import sys
 
-    original_folder = f"{DATA_DIR}/original"
-    encrypted_folder = f"{DATA_DIR}/encrypted"
-    restored_folder = f"{DATA_DIR}/restored"
+    original = f"{DATA_DIR}/original"
+    encrypted = f"{DATA_DIR}/encrypted"
 
-    # Nếu chưa có RSA key thì tạo mới
+    # If no RSA keypair found → generate new one
     if not os.path.exists(f"{KEY_DIR}/rsa_private.pem"):
+        print("RSA keypair not found → generating new keypair...")
         generate_rsa_keys()
 
-    # Cờ dòng lệnh
     args = sys.argv[1:] if len(sys.argv) > 1 else []
 
     if "--all" in args:
-        encrypt_all_in_folder(original_folder, encrypted_folder)
-    elif "--decrypt-all" in args:
-        decrypt_all_in_folder(encrypted_folder, restored_folder)
+        encrypt_all_in_folder(original, encrypted)
     else:
-        # Demo mã hóa & giải mã 1 file
-        sample_file = f"{original_folder}/quocphong_ss2.docx"
-        enc_file = f"{encrypted_folder}/quocphong_ss2.docx.enc"
-        enc_key_file = f"{encrypted_folder}/quocphong_ss2.docx.key.enc"
-        restored = f"{restored_folder}/quocphong_ss2.docx"
+        sample = f"{original}/sample.txt"
+        enc = f"{encrypted}/sample.txt.enc"
+        key = f"{encrypted}/sample.txt.key.enc"
 
-        encrypt_file(sample_file, enc_file, enc_key_file)
-        decrypt_file(enc_file, enc_key_file, restored)
+        print("No --all flag. Running sample encryption…")
+        encrypt_file(sample, enc, key)
