@@ -1,0 +1,107 @@
+# IMPORTANT: Do not push any AWS credentials, keys, or encrypted data.
+# =========================
+# GENERAL
+# =========================
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Editor / IDE config
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# PYTHON APPLICATION
+# =========================
+# Local config and secrets
+config.json
+config.ini
+config.yaml
+
+# Keys and credentials
+keys/
+*.pem
+*.key
+*.der
+*.crt
+*.bin
+
+# Sensitive data
+*.enc
+*.secret
+*.token
+*.csv
+*.json
+
+# Logs
+logs/
+*.log
+
+# Backup test data
+data/encrypted/
+data/restored/
+
+# =========================
+# TERRAFORM
+# =========================
+# Terraform state files
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Terraform working directories
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+terraform.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# =========================
+# PROJECT BUILD / DIST
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+# MISCELLANEOUS
+# =========================
+# Reports / temp docs
+*.pdf
+*.docx
+*.pptx
+docs/demo_screenshot_*.png
+
+# Python notebook cache
+.ipynb_checkpoints/
+
+# =========================
+# SECURITY RECOMMENDATIONS
+# =========================
+# Never commit AWS credentials or tokens
+.aws/
+.aws/credentials
+aws_access_keys.txt
+aws_secret.txt
+
+# Never commit data
+data/
