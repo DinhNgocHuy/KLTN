@@ -4,9 +4,9 @@ import glob
 import hashlib
 import boto3
 
-from logging_config import s3_logger, error_logger
-from config import get_bucket_name
-from encryption_config import DATA_DIR
+from app.logging_config import s3_upload_logger, error_logger
+from app.settings import get_bucket_name
+from app.settings import DATA_DIR
 
 # ============================================================
 # SHA256 CHECKSUM
@@ -68,7 +68,7 @@ def multipart_upload(local_path, bucket, key, metadata):
 def upload_file_to_s3(local_path, s3_key):
     bucket = get_bucket_name()
     if not bucket:
-        raise Exception("❌ Bucket name undefined!")
+        raise Exception("Bucket name undefined!")
 
     if not os.path.exists(local_path):
         raise FileNotFoundError(f"Local file not found: {local_path}")
@@ -79,7 +79,7 @@ def upload_file_to_s3(local_path, s3_key):
     # Skip identical
     if remote_sha == local_sha:
         print(f"⏩ Skipped (unchanged): {local_path}")
-        s3_logger.info(f"SKIPPED | file={local_path} | reason=SHA256_match")
+        s3_upload_logger.info(f"SKIPPED | file={local_path} | reason=SHA256_match")
         return
 
     filesize = os.path.getsize(local_path)
@@ -109,13 +109,13 @@ def upload_file_to_s3(local_path, s3_key):
 
         elapsed = time.perf_counter() - start
         print(f"✔ Uploaded {local_path} in {elapsed:.2f}s")
-        s3_logger.info(
+        s3_upload_logger.info(
             f"UPLOAD SUCCESS | file={local_path} | s3={s3_key} | sha256={local_sha} | time={elapsed:.2f}s"
         )
 
     except Exception as e:
         elapsed = time.perf_counter() - start
-        print(f"❌ Upload failed: {local_path} → {str(e)}")
+        print(f"Upload failed: {local_path} → {str(e)}")
         error_logger.error(
             f"UPLOAD FAIL | file={local_path} | s3={s3_key} | error={str(e)} | time={elapsed:.2f}s"
         )
@@ -127,7 +127,7 @@ def upload_file_to_s3(local_path, s3_key):
 def upload_all_encrypted():
     bucket = get_bucket_name()
     if not bucket:
-        raise Exception("❌ Bucket name undefined!")
+        raise Exception("Bucket name undefined!")
 
     encrypted_folder = f"{DATA_DIR}/encrypted"
     print(f"Scanning folder: {encrypted_folder}")

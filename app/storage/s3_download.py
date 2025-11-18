@@ -1,8 +1,7 @@
 import os
 import boto3
 
-from encryption_config import DATA_DIR
-from config import get_bucket_name
+from app.settings import get_bucket_name, DATA_DIR
 
 # ============================================================
 # GLOBAL

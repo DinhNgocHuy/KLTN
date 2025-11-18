@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from encryption_config import (
+from app.settings import (
     AES_KEY_SIZE,
     NONCE_SIZE,
     TAG_SIZE,
@@ -15,8 +15,8 @@ from encryption_config import (
     DATA_DIR,
 )
 
-from rsa_utils import load_rsa_keys
-from logging_config import decryption_logger, error_logger
+from app.crypto.rsa_utils import load_rsa_keys
+from app.logging_config import decryption_logger, error_logger
 
 # ============================================================
 # SHA256 CHECKSUM
