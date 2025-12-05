@@ -1,1 +1,0 @@
-bucket = "encrypted-backup-data"

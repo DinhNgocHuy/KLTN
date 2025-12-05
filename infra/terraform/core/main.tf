@@ -22,5 +22,28 @@ module "aws_s3_bucket" {
         restrict_public_buckets = true
     }
   }
-    
+
+  lifecycle_configuration = {
+    lifecycle_configuration = {
+      bucket = var.bucket
+
+      transition_default_minimum_object_size = "varies_by_storage_class"
+      rule = [{
+        id     = "Transition_Rules"
+        status = "Enabled"
+
+        transition = {
+          glacier_transition = {
+            days          = 90
+            storage_class = "GLACIER"
+          }
+        }
+        filter = {
+          root_prefix = {
+            prefix = ""
+          }
+        }
+      }]
+    }
+  }
 }
