@@ -9,85 +9,83 @@ from app.logging_config import key_logger, error_logger
 
 
 # ============================================================
-# 1) GENERATE RSA KEYPAIR (PRIVATE KEY PROTECTED BY PASSWORD)
+# GENERATE RSA KEYPAIR (PRIVATE KEY IS PASSWORD-PROTECTED)
 # ============================================================
 def generate_rsa_keys(password: str):
     """
-    Generate RSA private/public keys.
-    Private key is encrypted using the provided password.
+    Generate RSA-4096 private/public keypair.
+    Private key is encrypted using the given password.
     """
+
+    if not password or len(password) < 6:
+        raise ValueError("Password must be >= 6 characters.")
 
     key_logger.info("Generating RSA keypair (password protected)...")
 
+    Path(KEY_DIR).mkdir(parents=True, exist_ok=True)
+
     private_key = rsa.generate_private_key(
         public_exponent=65537,
-        key_size=4096,   # mạnh hơn 2048
+        key_size=4096,
     )
     public_key = private_key.public_key()
 
-    Path(KEY_DIR).mkdir(parents=True, exist_ok=True)
+    # ===== Save PRIVATE KEY (Encrypted PKCS#8) =====
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.BestAvailableEncryption(password.encode()),
+    )
+    (Path(KEY_DIR) / "rsa_private.pem").write_bytes(private_pem)
 
-    password_bytes = password.encode()
-
-    # --- Save encrypted private key ---
-    try:
-        with open(f"{KEY_DIR}/rsa_private.pem", "wb") as f:
-            pem = private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,  # chuẩn nhất 2025
-                encryption_algorithm=serialization.BestAvailableEncryption(password_bytes),
-            )
-            f.write(pem)
-    except Exception as e:
-        error_logger.error(f"Failed to write encrypted private key: {e}")
-        raise
-
-    # --- Save public key ---
-    try:
-        with open(f"{KEY_DIR}/rsa_public.pem", "wb") as f:
-            pem = public_key.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            f.write(pem)
-    except Exception as e:
-        error_logger.error(f"Failed to write public key: {e}")
-        raise
+    # ===== Save PUBLIC KEY =====
+    public_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    (Path(KEY_DIR) / "rsa_public.pem").write_bytes(public_pem)
 
     key_logger.info("RSA keypair generated successfully.")
-    print("✔ RSA keypair generated (private key is password-protected)")
+    print("✔ RSA keypair generated.")
 
 
 # ============================================================
-# 2) LOAD PRIVATE & PUBLIC KEY (REQUIRES PASSWORD)
+# LOAD ONLY PUBLIC KEY (NO PASSWORD REQUIRED)
 # ============================================================
-def load_rsa_keys(password: str):
+def load_public_key():
     """
-    Load RSA private & public keys.
-    Private key requires password to decrypt.
+    Load RSA public key from PEM file (no password).
     """
-
-    # --- Load encrypted private key ---
     try:
-        with open(f"{KEY_DIR}/rsa_private.pem", "rb") as f:
-            encrypted_pem = f.read()
+        public_pem = (Path(KEY_DIR) / "rsa_public.pem").read_bytes()
+        return serialization.load_pem_public_key(public_pem)
+    except Exception as e:
+        error_logger.error(f"Failed loading public key: {e}")
+        raise ValueError("❌ Failed to load RSA public key.")
 
-        private_key = serialization.load_pem_private_key(
-            encrypted_pem,
-            password=password.encode(),   # must match password used during generate
+
+# ============================================================
+# LOAD PRIVATE KEY (PASSWORD REQUIRED)
+# ============================================================
+def load_private_key(password: str):
+    """
+    Load RSA private key (must be decrypted with password).
+    """
+    try:
+        private_pem = (Path(KEY_DIR) / "rsa_private.pem").read_bytes()
+        return serialization.load_pem_private_key(
+            private_pem,
+            password=password.encode(),
         )
     except Exception as e:
-        error_logger.error(f"Failed to load private key: {e}")
+        error_logger.error(f"Failed loading private key: {e}")
         raise ValueError("❌ Incorrect password or corrupted private key file.")
 
-    # --- Load public key ---
-    try:
-        with open(f"{KEY_DIR}/rsa_public.pem", "rb") as f:
-            public_pem = f.read()
 
-        public_key = serialization.load_pem_public_key(public_pem)
-    except Exception as e:
-        error_logger.error(f"Failed to load public key: {e}")
-        raise
-
-    return private_key, public_key
+# ============================================================
+# LOAD BOTH PRIVATE & PUBLIC KEYS
+# ============================================================
+def load_rsa_keys(password: str):
+    private = load_private_key(password)
+    public = load_public_key()
+    return private, public

@@ -1,1 +1,1 @@
-bucket = "encrypted-backup-data"
+bucket = "kltn-demo1"

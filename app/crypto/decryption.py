@@ -1,9 +1,10 @@
 import os
 import json
 import time
-import hashlib
+from pathlib import Path
+
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from app.settings import (
@@ -11,129 +12,180 @@ from app.settings import (
     NONCE_SIZE,
     TAG_SIZE,
     CHUNK_SIZE,
-    KEY_DIR,
     DATA_DIR,
 )
-
-from app.crypto.rsa_utils import load_rsa_keys
+from app.crypto.rsa_utils import load_private_key
 from app.logging_config import decryption_logger, error_logger
-
-# ============================================================
-# SHA256 CHECKSUM
-# ============================================================
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+from app.utils.checksum import sha256_file
 
 
 # ============================================================
-# STREAMING AES-GCM DECRYPTION (WITH INTEGRITY CHECK)
+# DECRYPT ONE FILE
 # ============================================================
-def decrypt_file(enc_path, key_path, output_path):
+def decrypt_file(cipher_path, key_path, meta_path, password):
     start = time.perf_counter()
-    decryption_logger.info(f"START decrypt | file={enc_path}")
 
     try:
-        # ------------------------------------------------------------
-        # 1) Load metadata (to verify ciphertext integrity)
-        # ------------------------------------------------------------
-        metadata_path = enc_path.replace(".enc", ".metadata.json")
-        if not os.path.exists(metadata_path):
-            raise FileNotFoundError(f"Missing metadata file: {metadata_path}")
+        filename = Path(cipher_path).name.replace(".enc", "")
+        out_path = Path(DATA_DIR) / "decrypted" / filename
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(metadata_path, "r") as f:
-            metadata = json.load(f)
-
-        expected_checksum = metadata.get("ciphertext_sha256")
-        if not expected_checksum:
-            raise RuntimeError("Metadata missing ciphertext SHA256 hash")
+        print(f"\n=== DECRYPTING: {filename} ===")
 
         # ------------------------------------------------------------
-        # 2) Verify ciphertext checksum BEFORE decrypting
+        # Load metadata
         # ------------------------------------------------------------
-        actual_checksum = sha256_file(enc_path)
+        if not Path(meta_path).exists():
+            print("❌ Missing metadata file")
+            return False
 
-        if actual_checksum != expected_checksum:
-            raise RuntimeError(
-                f"Ciphertext integrity FAILED. expected={expected_checksum}, actual={actual_checksum}"
+        metadata = json.loads(Path(meta_path).read_text())
+
+        for req in ["ciphertext_sha256", "nonce", "tag"]:
+            if req not in metadata:
+                print(f"❌ metadata.json missing field: {req}")
+                return False
+
+        nonce = bytes.fromhex(metadata["nonce"])
+        tag = bytes.fromhex(metadata["tag"])
+        expected_sha = metadata["ciphertext_sha256"]
+
+        if len(nonce) != NONCE_SIZE:
+            print("❌ Nonce size mismatch")
+            return False
+        if len(tag) != TAG_SIZE:
+            print("❌ Tag size mismatch")
+            return False
+
+        # ------------------------------------------------------------
+        # Verify SHA256 of ciphertext
+        # ------------------------------------------------------------
+        actual_sha = sha256_file(cipher_path)
+        if actual_sha != expected_sha:
+            print("❌ Ciphertext corrupted — SHA checksum mismatch!")
+            error_logger.error(
+                f"Cipher mismatch | file={cipher_path} | expected={expected_sha} | actual={actual_sha}"
             )
+            return False
+
+        print("✓ Ciphertext integrity OK")
 
         # ------------------------------------------------------------
-        # 3) Load AES key (RSA-unwrapped)
+        # Load RSA private key
         # ------------------------------------------------------------
-        with open(key_path, "rb") as f:
-            encrypted_aes_key = f.read()
-
-        private_key, public_key = load_rsa_keys()
-
-        aes_key = private_key.decrypt(
-            encrypted_aes_key,
-            padding.OAEP(
-                mgf=padding.MGF1(hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
+        try:
+            private_key = load_private_key(password)
+        except:
+            print("❌ Wrong RSA password or private key corrupted")
+            return False
 
         # ------------------------------------------------------------
-        # 4) Start AES-GCM streaming decryption
+        # Load encrypted AES key
         # ------------------------------------------------------------
-        with open(enc_path, "rb") as fin:
-            nonce = fin.read(NONCE_SIZE)
-            tag = fin.read(TAG_SIZE)
+        encrypted_aes_key = Path(key_path).read_bytes()
 
-            cipher = Cipher(
-                algorithms.AES(aes_key),
-                modes.GCM(nonce, tag),
+        # RSA decrypt AES key
+        try:
+            aes_key = private_key.decrypt(
+                encrypted_aes_key,
+                padding.OAEP(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None,
+                ),
             )
-            decryptor = cipher.decryptor()
+        except:
+            print("❌ Wrong .key.enc file or RSA key mismatch")
+            return False
 
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, "wb") as fout:
-                while chunk := fin.read(CHUNK_SIZE):
-                    pt = decryptor.update(chunk)
-                    if pt:
-                        fout.write(pt)
+        if len(aes_key) != AES_KEY_SIZE:
+            print("❌ Invalid AES key size")
+            return False
 
-                final_pt = decryptor.finalize()
-                if final_pt:
-                    fout.write(final_pt)
+        # ------------------------------------------------------------
+        # AES-GCM streaming decrypt
+        # ------------------------------------------------------------
+        decryptor = Cipher(
+            algorithms.AES(aes_key),
+            modes.GCM(nonce, tag),
+        ).decryptor()
+
+        with open(cipher_path, "rb") as fin, open(out_path, "wb") as fout:
+            fin.seek(NONCE_SIZE + TAG_SIZE)  # skip NONCE + TAG
+
+            while chunk := fin.read(CHUNK_SIZE):
+                fout.write(decryptor.update(chunk))
+
+            # finalize AES-GCM (auth check)
+            try:
+                decryptor.finalize()
+            except:
+                print("❌ Authentication TAG mismatch — file was modified!")
+                error_logger.error(f"TAG mismatch | file={cipher_path}")
+                return False
 
         elapsed = time.perf_counter() - start
-        decryption_logger.info(
-            f"SUCCESS decrypt | file={enc_path} | output={output_path} | time={elapsed:.2f}s"
-        )
-        print(f"[Decrypted OK] {enc_path} → {output_path} in {elapsed:.2f}s")
+        print(f"✔ Decryption OK → {out_path} ({elapsed:.2f}s)")
+        decryption_logger.info(f"Success | file={cipher_path} | output={out_path} | {elapsed:.2f}s")
+
+        return True
 
     except Exception as e:
-        elapsed = time.perf_counter() - start
-        error_logger.error(
-            f"FAIL decrypt | file={enc_path} | err={str(e)} | time={elapsed:.2f}s"
-        )
-        print(f"[ERROR] Decryption failed for {enc_path} → {str(e)}")
-        raise
+        print(f"❌ Decryption error: {e}")
+        error_logger.error(f"Decrypt error | file={cipher_path} | {e}")
+        return False
+
 
 
 # ============================================================
-# MAIN ENTRYPOINT
+# DECRYPT ALL
+# ============================================================
+def decrypt_all(password):
+    enc_folder = Path(DATA_DIR) / "downloaded_encrypted"
+
+    # Chỉ decrypt file .enc thật sự, KHÔNG decrypt .key.enc
+    cipher_files = [
+        f for f in enc_folder.glob("*.enc")
+        if not f.name.endswith(".key.enc")
+    ]
+
+    print(f"Found {len(cipher_files)} encrypted files.")
+
+    for cipher_file in cipher_files:
+        base = cipher_file.stem  # remove .enc
+        key_file = enc_folder / f"{base}.key.enc"
+        meta_file = enc_folder / f"{base}.metadata.json"
+
+        decrypt_file(cipher_file, key_file, meta_file, password)
+
+
+
+# ============================================================
+# CLI
 # ============================================================
 if __name__ == "__main__":
     import sys
 
-    encrypted_folder = f"{DATA_DIR}/encrypted"
-    restored_folder = f"{DATA_DIR}/restored"
+    args = sys.argv[1:]
+    password = input("Enter RSA private key password: ").strip()
 
-    if len(sys.argv) < 2:
-        print("Usage: python decrypt.py <file.enc>")
-        exit(1)
+    # Decrypt ALL
+    if "--all" in args:
+        decrypt_all(password)
+        exit()
 
-    enc_file = sys.argv[1]
-    base = enc_file.replace(".enc", "")
+    # Decrypt one file
+    if "--file" in args:
+        i = args.index("--file")
+        fname = args[i + 1]
 
-    key_file = base + ".key.enc"
-    output_file = base.replace("/encrypted/", "/restored/")
+        cipher_path = Path(DATA_DIR) / "encrypted" / f"{fname}.enc"
+        key_path    = Path(DATA_DIR) / "encrypted" / f"{fname}.key.enc"
+        meta_path   = Path(DATA_DIR) / "encrypted" / f"{fname}.metadata.json"
 
-    decrypt_file(enc_file, key_file, output_file)
+        decrypt_file(cipher_path, key_path, meta_path, password)
+        exit()
+
+    print("Usage:")
+    print("  python -m app.crypto.decryption --file <filename>")
+    print("  python -m app.crypto.decryption --all")

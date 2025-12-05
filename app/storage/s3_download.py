@@ -1,119 +1,172 @@
 import os
+import json
 import boto3
+from pathlib import Path
 
 from app.settings import get_bucket_name, DATA_DIR
+from app.logging_config import s3_download_logger, error_logger
+
 
 # ============================================================
 # GLOBAL
 # ============================================================
-S3_BUCKET = get_bucket_name()
+BUCKET = get_bucket_name()
 s3 = boto3.client("s3")
 
-ENCRYPTED_LOCAL_FOLDER = f"{DATA_DIR}/encrypted"
+LOCAL_DIR = Path(DATA_DIR) / "downloaded_encrypted"
+LOCAL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
-# 1) DOWNLOAD 1 FILE PAIR (.enc + .key.enc)
+# VERIFY ON S3 BEFORE DOWNLOAD
 # ============================================================
-def download_file_pair(filename, target_folder=ENCRYPTED_LOCAL_FOLDER):
+def verify_on_s3(filename):
     """
-    Tải file <filename>.enc và <filename>.key.enc về thư mục local.
-    Ví dụ filename = "quocphong_ss2.docx"
+    Verify integrity trực tiếp trên S3:
+    - Load metadata/<file>.metadata.json
+    - Load metadata SHA256 từ encrypted/<file>.enc (S3 metadata)
+    - So sánh checksum
     """
+    meta_key = f"metadata/{filename}.metadata.json"
+    enc_key = f"encrypted/{filename}.enc"
 
-    os.makedirs(target_folder, exist_ok=True)
+    print(f"\n=== VERIFY ON S3: {filename} ===")
 
-    enc_s3_key = f"encrypted/{filename}.enc"
-    key_s3_key = f"keys/{filename}.key.enc"
-
-    enc_local = os.path.join(target_folder, f"{filename}.enc")
-    key_local = os.path.join(target_folder, f"{filename}.key.enc")
-
-    print(f"\n=== DOWNLOAD: {filename} ===")
-
-    # -------- DOWNLOAD .enc --------
+    # -------- Fetch metadata.json --------
     try:
-        print(f"[S3] Fetching {enc_s3_key} → {enc_local}")
-        s3.download_file(S3_BUCKET, enc_s3_key, enc_local)
-        print("✔ Downloaded .enc")
+        obj = s3.get_object(Bucket=BUCKET, Key=meta_key)
+        metadata = json.loads(obj["Body"].read())
     except Exception as e:
-        print(f"❌ Failed to download encrypted file: {enc_s3_key} — {e}")
-        return None, None
+        print(f"Cannot load metadata.json: {meta_key} — {e}")
+        error_logger.error(f"metadata.json missing | {meta_key} | {e}")
+        return False
 
-    # -------- DOWNLOAD .key.enc --------
+    expected_sha = metadata.get("ciphertext_sha256")
+    if not expected_sha:
+        print("Missing ciphertext_sha256 in metadata.json")
+        return False
+
+    # -------- Fetch S3 object metadata SHA256 --------
     try:
-        print(f"[S3] Fetching {key_s3_key} → {key_local}")
-        s3.download_file(S3_BUCKET, key_s3_key, key_local)
-        print("✔ Downloaded key file")
+        head = s3.head_object(Bucket=BUCKET, Key=enc_key)
+        remote_sha = head.get("Metadata", {}).get("sha256")
     except Exception as e:
-        print(f"❌ Failed to download key file: {key_s3_key} — {e}")
-        return None, None
+        print(f"Cannot read S3 metadata: {enc_key} — {e}")
+        return False
 
-    print("✔ DONE downloading file pair.\n")
-    return enc_local, key_local
+    if not remote_sha:
+        print("Missing sha256 in S3 metadata")
+        return False
 
+    # -------- Compare --------
+    print(f"metadata.json SHA256 : {expected_sha}")
+    print(f"S3 metadata SHA256    : {remote_sha}")
+
+    if expected_sha != remote_sha:
+        print("✗ INTEGRITY FAIL — File on S3 is corrupted or modified.")
+        error_logger.error(
+            f"S3 integrity FAIL | file={filename} | expected={expected_sha} | actual={remote_sha}"
+        )
+        return False
+
+    print("✓ S3 integrity OK — Safe to download.\n")
+    return True
 
 
 # ============================================================
-# 2) DOWNLOAD ALL ENCRYPTED FILES IN S3
+# DOWNLOAD FILE
 # ============================================================
-def download_all_encrypted(target_folder=ENCRYPTED_LOCAL_FOLDER):
+def download_s3_object(key, local_path):
+    """Small wrapper for downloading with logging."""
+    try:
+        s3.download_file(BUCKET, key, str(local_path))
+        s3_download_logger.info(f"Downloaded {key}")
+        print(f"✔ Downloaded {key}")
+        return True
+    except Exception as e:
+        print(f"Download failed: {key} — {e}")
+        error_logger.error(f"Download failed | {key} | {e}")
+        return False
+
+
+# ============================================================
+# DOWNLOAD ONE FILE BUNDLE
+# ============================================================
+def download_file_pair(filename):
     """
-    Tải TẤT CẢ file encrypted trong S3 về local.
-    (tự động ghép key đúng file)
+    Download: .enc + .key.enc + .metadata.json
+    ONLY IF VERIFY S3 INTEGRITY = OK
     """
 
-    print(f"Listing encrypted objects from S3 bucket: {S3_BUCKET}")
+    # ---------- Verify S3 integrity ----------
+    if not verify_on_s3(filename):
+        print("Aborted. Integrity check failed. Not downloading.")
+        return False
 
-    os.makedirs(target_folder, exist_ok=True)
+    print(f"=== DOWNLOAD BUNDLE: {filename} ===")
 
-    # GET LIST *.enc from S3
-    objects = s3.list_objects_v2(
-        Bucket=S3_BUCKET,
-        Prefix="encrypted/"
-    )
+    enc_key = f"encrypted/{filename}.enc"
+    key_key = f"keys/{filename}.key.enc"
+    meta_key = f"metadata/{filename}.metadata.json"
 
+    local_enc = LOCAL_DIR / f"{filename}.enc"
+    local_key = LOCAL_DIR / f"{filename}.key.enc"
+    local_meta = LOCAL_DIR / f"{filename}.metadata.json"
+
+    # ---------- Download all three required files ----------
+    if not download_s3_object(enc_key, local_enc):
+        return False
+    if not download_s3_object(key_key, local_key):
+        return False
+    if not download_s3_object(meta_key, local_meta):
+        return False
+
+    print(f"✔ Completed download for {filename}\n")
+    return True
+
+# ============================================================
+# DOWNLOAD ALL ENCRYPTED FILES
+# ============================================================
+def download_all_encrypted():
+    print(f"Listing encrypted objects in S3 bucket: {BUCKET}")
+
+    objects = s3.list_objects_v2(Bucket=BUCKET, Prefix="encrypted/")
     if "Contents" not in objects:
-        print("❌ No encrypted files found in S3.")
+        print("No encrypted files found.")
         return
 
-    encrypted_files = [
+    basenames = [
         os.path.basename(obj["Key"]).replace(".enc", "")
         for obj in objects["Contents"]
         if obj["Key"].endswith(".enc")
     ]
 
-    print(f"Found {len(encrypted_files)} encrypted objects in S3.\n")
+    print(f"Found {len(basenames)} encrypted files.\n")
 
-    # Download each pair
-    for base in encrypted_files:
-        download_file_pair(base, target_folder)
+    for base in basenames:
+        download_file_pair(base)
 
-    print("✔ DONE downloading ALL encrypted data from S3.\n")
-
+    print("✔ DONE downloading ALL encrypted data.\n")
 
 
 # ============================================================
-# 3) MAIN ENTRYPOINT
+# CLI
 # ============================================================
 if __name__ == "__main__":
     import sys
 
     args = sys.argv[1:]
 
-    # Download toàn bộ encrypted folder
     if "--all" in args:
         download_all_encrypted()
         exit()
 
-    # Download 1 file cụ thể
     if "--file" in args:
         idx = args.index("--file")
         filename = args[idx + 1]
         download_file_pair(filename)
         exit()
 
-    # Hướng dẫn
     print("Usage:")
-    print("  py s3_download.py --file <filename>")
-    print("  py s3_download.py --all")
+    print("  python -m app.storage.s3_download --file <filename>")
+    print("  python -m app.storage.s3_download --all")
