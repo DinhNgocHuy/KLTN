@@ -1,0 +1,23 @@
+# --- Core Crypto ---
+cryptography>=42.0.0
+
+# --- AWS SDK for S3 Upload/Download ---
+boto3>=1.34.0
+botocore>=1.34.0
+
+# --- JSON, checksum, file utils (standard lib, no need to install) ---
+
+# --- Optional: environment variable loader (if used) ---
+python-dotenv>=1.0.1
+
+# --- GUI (Tkinter) ---
+# Tkinter is built-in on Windows. No package needed.
+
+# --- PyInstaller for building EXE ---
+pyinstaller>=6.2.0
+
+# --- Logging enhancements (optional but recommended) ---
+colorlog>=6.8.0
+
+# --- Scheduler (if your scheduler module uses APScheduler) ---
+APScheduler>=3.10.4

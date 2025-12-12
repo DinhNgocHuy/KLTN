@@ -1,13 +1,13 @@
-# IMPORTANT: Do not push any AWS credentials, keys, or encrypted data.
-# =========================
+# ======================================================================
 # GENERAL
-# =========================
-# OS files
+# ======================================================================
+# OS system files
 .DS_Store
 Thumbs.db
 
 # Python cache & compiled files
 __pycache__/
+*/__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
@@ -18,89 +18,106 @@ venv/
 env/
 .venv/
 
-# Editor / IDE config
+# Editor / IDE settings
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# =========================
-# PYTHON APPLICATION
-# =========================
-# Local config and secrets
+# ======================================================================
+# PYTHON APPLICATION (KLTN PROJECT)
+# ======================================================================
+
+# Local configs (never commit secrets)
 config.json
 config.ini
 config.yaml
 
 # Keys and credentials
-keys/
+keys/**
+!keys/README.md      # allow readme if you want to describe key storage
+
 *.pem
 *.key
 *.der
 *.crt
 *.bin
 
-# Sensitive data
-*.enc
-*.secret
-*.token
-*.csv
-*.json
+# AES temporary working directories (if any)
+keys/aes/working/
+keys/aes/rotated/
 
-# Logs
+# Sensitive encrypted output (local)
+data/encrypted/*
+data/decrypted/*
+data/downloaded/*
+data/metadata/*
+data/restored/*
+
+# Do NOT ignore original test input files
+# data/original/*   <-- keep for testing (do not ignore)
+
+# ======================================================================
+# LOGS
+# ======================================================================
 logs/
 *.log
 
-# Backup test data
-data/encrypted/
-data/restored/
-data/original/
-
-# =========================
+# ======================================================================
 # TERRAFORM
-# =========================
-# Terraform state files
+# ======================================================================
+
+# State files
 *.tfstate
 *.tfstate.*
 crash.log
 crash.*.log
 
-# Terraform working directories
+# Terraform working directory
 .terraform/
-.terraform.lock.hcl
 terraform.tfvars
 terraform.tfvars.json
+.terraform.lock.hcl
+
+# Terraform override files
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
 
-# =========================
-# PROJECT BUILD / DIST
-# =========================
+# ======================================================================
+# BUILD / DIST / EXECUTABLES
+# ======================================================================
 build/
 dist/
+*.spec
 *.egg-info/
 .eggs/
+output/
 
-# =========================
-# MISCELLANEOUS
-# =========================
-# Reports / temp docs
-*.pdf
-*.docx
-*.pptx
-docs/demo_screenshot_*.png
+# PyInstaller temp build files
+__pyinstaller_temp__/
 
-# Python notebook cache
+# ======================================================================
+# MISC
+# ======================================================================
+
+# Notebook checkpoints
 .ipynb_checkpoints/
 
-# =========================
-# SECURITY RECOMMENDATIONS
-# =========================
-# Never commit AWS credentials or tokens
+# GUI build cache
+gui/__pycache__/
+
+# Reports / temporary documents (optional)
+*.tmp
+*.bak
+
+# Local documentation snapshots
+docs/demo_screenshot_*.png
+
+# ======================================================================
+# SECURITY — NEVER COMMIT CREDENTIALS
+# ======================================================================
 .aws/
-.aws/credentials
 aws_access_keys.txt
 aws_secret.txt
-
