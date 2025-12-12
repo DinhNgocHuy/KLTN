@@ -34,7 +34,7 @@ module "aws_s3_bucket" {
 
         transition = {
           glacier_transition = {
-            days          = 90
+            days          = 30
             storage_class = "GLACIER"
           }
         }

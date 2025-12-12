@@ -47,15 +47,8 @@ keys/**
 keys/aes/working/
 keys/aes/rotated/
 
-# Sensitive encrypted output (local)
-data/encrypted/*
-data/decrypted/*
-data/downloaded/*
-data/metadata/*
-data/restored/*
-
-# Do NOT ignore original test input files
-# data/original/*   <-- keep for testing (do not ignore)
+# data files for testing
+data/
 
 # ======================================================================
 # LOGS
@@ -121,3 +114,7 @@ docs/demo_screenshot_*.png
 .aws/
 aws_access_keys.txt
 aws_secret.txt
+
+
+# generate data files for testing
+generate.py
