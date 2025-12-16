@@ -1,7 +1,9 @@
 import json
+import boto3
 import subprocess
 from pathlib import Path
 from functools import lru_cache
+from botocore.exceptions import ClientError
 from app.logging_config import system_logger, error_logger
 
 # ============================================================
@@ -25,26 +27,34 @@ FALLBACK_CONFIG = BASE_DIR / "config.json"
 # ENCRYPTION / DECRYPTION PARAMETERS
 # ============================================================
 # AES-GCM
-AES_KEY_SIZE = 32         # 256-bit
-NONCE_SIZE = 12           # 96-bit recommended for AES-GCM
-TAG_SIZE = 16             # 128-bit GCM tag
-CHUNK_SIZE = 1024 * 1024  # streaming size: 1MB
+AES_KEY_SIZE = 32                      # 256-bit
+NONCE_SIZE = 12                        # 96-bit recommended for AES-GCM
+TAG_SIZE = 16                          # 128-bit GCM tag
+CRYPTO_CHUNK_SIZE = 1024 * 1024 * 1024 # 1GB per chunk
+STREAM_BUFFER_SIZE = 1024 * 1024       # streaming size: 1MB
+MAX_GCM_BYTES = 60 * 1024 * 1024 * 1024  # 60GB safe threshold
 
 # RSA PARAMETERS
 RSA_KEY_SIZE = 4096   # recommended for security
 RSA_PUBLIC_EXPONENT = 65537
 
+
 # ============================================================
 # TERRAFORM → GET S3 BUCKET NAME
 # ============================================================
 @lru_cache(maxsize=1)
+@lru_cache(maxsize=1)
 def get_bucket_name():
     """
-    Returns S3 bucket name from Terraform.
+    Returns validated S3 bucket name.
     Priority:
         1. Terraform live output
-        2. fallback config.json (offline mode)
+        2. fallback config.json
+    Bucket must exist in AWS.
     """
+    bucket_name = None
+
+    # --- 1. Terraform output ---
     try:
         system_logger.info("Reading S3 bucket name from Terraform output...")
 
@@ -58,41 +68,56 @@ def get_bucket_name():
         )
 
         outputs = json.loads(result.stdout)
-        bucket_name = outputs.get("id", {}).get("value", None)
-
-        if bucket_name:
-            system_logger.info(f"S3 Bucket (Terraform): {bucket_name}")
-            return bucket_name
-
-        system_logger.warning("Terraform output missing id.value")
-
-    except subprocess.CalledProcessError as e:
-        error_logger.error("Terraform error. Did you run `terraform apply`?")
-        error_logger.error(str(e))
-
-    except FileNotFoundError:
-        error_logger.error("Terraform binary not found.")
+        bucket_name = outputs.get("id", {}).get("value")
 
     except Exception as e:
-        error_logger.error(f"Unexpected error reading Terraform output: {e}")
+        error_logger.error(f"Terraform output error: {e}")
 
-    # Fallback mode
-    if FALLBACK_CONFIG.exists():
+    # --- 2. Fallback config ---
+    if not bucket_name and FALLBACK_CONFIG.exists():
         system_logger.warning("Using fallback config.json")
-
         try:
             cfg = json.load(open(FALLBACK_CONFIG, "r"))
-            b = cfg.get("bucket_name", None)
-            if b:
-                system_logger.info(f"S3 Bucket (fallback): {b}")
-                return b
-
+            bucket_name = cfg.get("bucket_name")
         except Exception as e:
             error_logger.error(f"Failed reading fallback config.json: {e}")
 
-    error_logger.error("S3 Bucket not found!")
-    return None
+    if not bucket_name:
+        error_logger.error("S3 bucket name not found in any source.")
+        return None
 
+    # --- 3. REALITY CHECK: AWS ---
+    if not bucket_exists(bucket_name):
+        error_logger.error(
+            f"S3 bucket '{bucket_name}' is configured but does not exist in AWS."
+        )
+        return None
+
+    system_logger.info(f"S3 bucket validated: {bucket_name}")
+    return bucket_name
+
+
+def bucket_exists(bucket_name: str) -> bool:
+    """
+    Check S3 bucket existence using AWS API (HeadBucket).
+    """
+    s3 = boto3.client("s3")
+
+    try:
+        s3.head_bucket(Bucket=bucket_name)
+        return True
+
+    except ClientError as e:
+        error_code = int(e.response["Error"]["Code"])
+
+        if error_code == 404:
+            system_logger.error(f"S3 bucket '{bucket_name}' does not exist.")
+        else:
+            system_logger.error(
+                f"Unable to access S3 bucket '{bucket_name}': {e}"
+            )
+        return False
+    
 # ============================================================
 # SELF-TEST
 # ============================================================

@@ -37,7 +37,7 @@ def verify_local(enc_file_path):
     metadata_path = f"{base}.metadata.json"
 
     if not os.path.exists(metadata_path):
-        print(f"❌ Metadata not found: {metadata_path}")
+        print(f"Metadata not found: {metadata_path}")
         verify_error_logger.error(f"Missing metadata: {metadata_path}")
         return False
 
@@ -46,7 +46,7 @@ def verify_local(enc_file_path):
     required = ["ciphertext_sha256", "nonce", "tag"]
     for k in required:
         if k not in metadata:
-            print(f"❌ Missing field `{k}` in metadata.")
+            print(f"Missing field `{k}` in metadata.")
             verify_error_logger.error(f"Missing `{k}` in {metadata_path}")
             return False
 
@@ -57,16 +57,15 @@ def verify_local(enc_file_path):
     print(f"Actual   SHA256: {actual_sha}")
 
     if actual_sha != expected_sha:
-        print("✗ Local integrity FAILED.")
+        print("Local integrity FAILED.")
         verify_error_logger.error(
             f"Local verify FAIL | file={enc_file_path} | expected={expected_sha} | actual={actual_sha}"
         )
         return False
 
-    print("✓ Local integrity OK.")
+    print("Local integrity OK.")
     verify_logger.info(f"Local verify OK | file={enc_file_path}")
     return True
-
 
 # ============================================================
 # VERIFY ON S3 (without downloading .enc)
@@ -92,12 +91,12 @@ def verify_on_s3(filename):
         obj = s3.get_object(Bucket=BUCKET, Key=meta_key)
         metadata = json.loads(obj["Body"].read())
     except Exception as e:
-        print(f"❌ Cannot fetch metadata.json: {meta_key} — {e}")
+        print(f"Cannot fetch metadata.json: {meta_key} — {e}")
         return False
 
     expected_sha = metadata.get("ciphertext_sha256")
     if not expected_sha:
-        print("❌ metadata.json missing field: ciphertext_sha256")
+        print("metadata.json missing field: ciphertext_sha256")
         return False
 
     # 2) Fetch SHA256 from S3 object metadata
@@ -105,11 +104,11 @@ def verify_on_s3(filename):
         head = s3.head_object(Bucket=BUCKET, Key=enc_key)
         remote_sha = head.get("Metadata", {}).get("sha256")
     except Exception as e:
-        print(f"❌ Cannot read S3 metadata: {enc_key} — {e}")
+        print(f"Cannot read S3 metadata: {enc_key} — {e}")
         return False
 
     if not remote_sha:
-        print("❌ S3 metadata missing sha256")
+        print("S3 metadata missing sha256")
         return False
 
     print(f"Metadata.json SHA256 : {expected_sha}")

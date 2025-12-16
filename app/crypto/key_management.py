@@ -33,15 +33,15 @@ def rotate_keys(old_password: str):
     try:
         old_private, old_public = load_rsa_keys(old_password)
     except Exception:
-        print("❌ Incorrect old password. Rotation aborted.")
+        print("Incorrect old password. Rotation aborted.")
         return False
 
-    print("✔ Old RSA key loaded.")
+    print("Old RSA key loaded.")
 
     # 2) New password
     new_password = input("Enter NEW password for RSA private key: ").strip()
     if len(new_password) < 6:
-        print("❌ Password too short (min 6 chars).")
+        print("Password too short (min 6 chars).")
         return False
 
     # 3) Generate new RSA keys
@@ -49,7 +49,7 @@ def rotate_keys(old_password: str):
     try:
         generate_rsa_keys(new_password)
     except Exception as e:
-        print(f"❌ Failed generating RSA keys: {e}")
+        print(f"Failed generating RSA keys: {e}")
         return False
 
     print("✔ New RSA keypair generated.")
@@ -60,7 +60,7 @@ def rotate_keys(old_password: str):
     key_files = find_all_encrypted_keys()
 
     if not key_files:
-        print("⚠ No AES keys found. Nothing to rotate.")
+        print("No AES keys found. Nothing to rotate.")
         return True
 
     for key_file in key_files:
@@ -73,8 +73,8 @@ def rotate_keys(old_password: str):
                 padding.OAEP(
                     mgf=padding.MGF1(hashes.SHA256()),
                     algorithm=hashes.SHA256(),
-                    label=None
-                )
+                    label=None,
+                ),
             )
 
             # encrypt AES key with new public key
@@ -83,27 +83,24 @@ def rotate_keys(old_password: str):
                 padding.OAEP(
                     mgf=padding.MGF1(hashes.SHA256()),
                     algorithm=hashes.SHA256(),
-                    label=None
-                )
+                    label=None,
+                ),
             )
 
             key_file.write_bytes(encrypted_new)
 
-            #Upload rotated key to S3
-            upload_file_to_s3(
-                local_path=str(key_file),
-                s3_key=f"keys/{key_file.name}"
-            )
+            # Upload rotated key to S3
+            upload_file_to_s3(local_path=str(key_file), s3_key=f"keys/{key_file.name}")
 
             key_logger.info(f"Rotated AES key: {key_file.name}")
             print(f"✔ Rotated: {key_file.name}")
 
         except Exception as e:
             error_logger.error(f"Failed rotating {key_file}: {e}")
-            print(f"❌ Failed rotating {key_file.name}")
+            print(f"Failed rotating {key_file.name}")
 
     print("======================================")
-    print("🎉 RSA Key Rotation Completed Successfully")
+    print("RSA Key Rotation Completed Successfully")
     print("======================================")
 
     key_logger.info("=== RSA Key Rotation Completed ===")
@@ -127,11 +124,11 @@ if __name__ == "__main__":
         print("=== Generate RSA Keypair ===")
         pw = input("Enter password: ").strip()
         if len(pw) < 6:
-            print("❌ Password too short.")
+            print("Password too short.")
             exit(1)
 
         generate_rsa_keys(pw)
-        print("🎉 RSA keypair created.")
+        print("RSA keypair created.")
         exit(0)
 
     # -------- Rotate Keys --------
@@ -140,6 +137,6 @@ if __name__ == "__main__":
         rotate_keys(old_pw)
         exit(0)
 
-    print("⚠ Missing argument. Use:")
+    print("Missing argument. Use:")
     print("   --generate")
     print("   --rotate")

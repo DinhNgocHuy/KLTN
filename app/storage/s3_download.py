@@ -69,7 +69,7 @@ def verify_on_s3(filename):
         )
         return False
 
-    print("✓ S3 integrity OK — Safe to download.\n")
+    print("S3 integrity OK — Safe to download.\n")
     return True
 
 
@@ -81,7 +81,7 @@ def download_s3_object(key, local_path):
     try:
         s3.download_file(BUCKET, key, str(local_path))
         s3_download_logger.info(f"Downloaded {key}")
-        print(f"✔ Downloaded {key}")
+        print(f"Downloaded {key}")
         return True
     except Exception as e:
         print(f"Download failed: {key} — {e}")
@@ -146,7 +146,7 @@ def download_all_encrypted():
     for base in basenames:
         download_file_pair(base)
 
-    print("✔ DONE downloading ALL encrypted data.\n")
+    print("DONE downloading ALL encrypted data.\n")
 
 
 # ============================================================

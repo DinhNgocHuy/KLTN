@@ -46,7 +46,7 @@ def generate_rsa_keys(password: str):
     (Path(KEY_DIR) / "rsa_public.pem").write_bytes(public_pem)
 
     key_logger.info("RSA keypair generated successfully.")
-    print("✔ RSA keypair generated.")
+    print("RSA keypair generated.")
 
 
 # ============================================================
@@ -61,7 +61,7 @@ def load_public_key():
         return serialization.load_pem_public_key(public_pem)
     except Exception as e:
         error_logger.error(f"Failed loading public key: {e}")
-        raise ValueError("❌ Failed to load RSA public key.")
+        raise ValueError("Failed to load RSA public key.")
 
 
 # ============================================================
@@ -79,7 +79,7 @@ def load_private_key(password: str):
         )
     except Exception as e:
         error_logger.error(f"Failed loading private key: {e}")
-        raise ValueError("❌ Incorrect password or corrupted private key file.")
+        raise ValueError("Incorrect password or corrupted private key file.")
 
 
 # ============================================================

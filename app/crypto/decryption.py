@@ -11,7 +11,7 @@ from app.settings import (
     AES_KEY_SIZE,
     NONCE_SIZE,
     TAG_SIZE,
-    CHUNK_SIZE,
+    STREAM_BUFFER_SIZE,
     DATA_DIR,
 )
 from app.crypto.rsa_utils import load_private_key
@@ -20,144 +20,165 @@ from app.utils.checksum import sha256_file
 
 
 # ============================================================
-# DECRYPT ONE FILE
+# SINGLE FILE AES-GCM DECRYPT
 # ============================================================
-def decrypt_file(cipher_path, key_path, meta_path, password):
+def decrypt_file_single(cipher_path, key_path, meta_path, private_key):
     start = time.perf_counter()
 
-    try:
-        filename = Path(cipher_path).name.replace(".enc", "")
-        out_path = Path(DATA_DIR) / "decrypted" / filename
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+    filename = Path(cipher_path).name.replace(".enc", "")
+    out_path = Path(DATA_DIR) / "decrypted" / filename
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n=== DECRYPTING: {filename} ===")
+    print(f"\n=== DECRYPTING (single): {filename} ===")
 
-        # ------------------------------------------------------------
-        # Load metadata
-        # ------------------------------------------------------------
-        if not Path(meta_path).exists():
-            print("❌ Missing metadata file")
-            return False
-
-        metadata = json.loads(Path(meta_path).read_text())
-
-        for req in ["ciphertext_sha256", "nonce", "tag"]:
-            if req not in metadata:
-                print(f"❌ metadata.json missing field: {req}")
-                return False
-
-        nonce = bytes.fromhex(metadata["nonce"])
-        tag = bytes.fromhex(metadata["tag"])
-        expected_sha = metadata["ciphertext_sha256"]
-
-        if len(nonce) != NONCE_SIZE:
-            print("❌ Nonce size mismatch")
-            return False
-        if len(tag) != TAG_SIZE:
-            print("❌ Tag size mismatch")
-            return False
-
-        # ------------------------------------------------------------
-        # Verify SHA256 of ciphertext
-        # ------------------------------------------------------------
-        actual_sha = sha256_file(cipher_path)
-        if actual_sha != expected_sha:
-            print("❌ Ciphertext corrupted — SHA checksum mismatch!")
-            error_logger.error(
-                f"Cipher mismatch | file={cipher_path} | expected={expected_sha} | actual={actual_sha}"
-            )
-            return False
-
-        print("✓ Ciphertext integrity OK")
-
-        # ------------------------------------------------------------
-        # Load RSA private key
-        # ------------------------------------------------------------
-        try:
-            private_key = load_private_key(password)
-        except:
-            print("❌ Wrong RSA password or private key corrupted")
-            return False
-
-        # ------------------------------------------------------------
-        # Load encrypted AES key
-        # ------------------------------------------------------------
-        encrypted_aes_key = Path(key_path).read_bytes()
-
-        # RSA decrypt AES key
-        try:
-            aes_key = private_key.decrypt(
-                encrypted_aes_key,
-                padding.OAEP(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None,
-                ),
-            )
-        except:
-            print("❌ Wrong .key.enc file or RSA key mismatch")
-            return False
-
-        if len(aes_key) != AES_KEY_SIZE:
-            print("❌ Invalid AES key size")
-            return False
-
-        # ------------------------------------------------------------
-        # AES-GCM streaming decrypt
-        # ------------------------------------------------------------
-        decryptor = Cipher(
-            algorithms.AES(aes_key),
-            modes.GCM(nonce, tag),
-        ).decryptor()
-
-        with open(cipher_path, "rb") as fin, open(out_path, "wb") as fout:
-            fin.seek(NONCE_SIZE + TAG_SIZE)  # skip NONCE + TAG
-
-            while chunk := fin.read(CHUNK_SIZE):
-                fout.write(decryptor.update(chunk))
-
-            # finalize AES-GCM (auth check)
-            try:
-                decryptor.finalize()
-            except:
-                print("❌ Authentication TAG mismatch — file was modified!")
-                error_logger.error(f"TAG mismatch | file={cipher_path}")
-                return False
-
-        elapsed = time.perf_counter() - start
-        print(f"✔ Decryption OK → {out_path} ({elapsed:.2f}s)")
-        decryption_logger.info(f"Success | file={cipher_path} | output={out_path} | {elapsed:.2f}s")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Decryption error: {e}")
-        error_logger.error(f"Decrypt error | file={cipher_path} | {e}")
+    if not meta_path.exists():
+        print("Missing metadata file")
         return False
 
+    metadata = json.loads(meta_path.read_text())
+    nonce = bytes.fromhex(metadata["nonce"])
+    tag = bytes.fromhex(metadata["tag"])
+    expected_sha = metadata["ciphertext_sha256"]
+
+    # Verify ciphertext integrity
+    actual_sha = sha256_file(cipher_path)
+    if actual_sha != expected_sha:
+        print("Ciphertext corrupted (SHA256 mismatch)")
+        return False
+
+    encrypted_aes_key = key_path.read_bytes()
+    aes_key = private_key.decrypt(
+        encrypted_aes_key,
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+
+    decryptor = Cipher(
+        algorithms.AES(aes_key),
+        modes.GCM(nonce, tag),
+    ).decryptor()
+
+    with open(cipher_path, "rb") as fin, open(out_path, "wb") as fout:
+        fin.seek(NONCE_SIZE + TAG_SIZE)
+        while buf := fin.read(STREAM_BUFFER_SIZE):
+            fout.write(decryptor.update(buf))
+
+        try:
+            decryptor.finalize()
+        except Exception:
+            print("Authentication TAG mismatch")
+            return False
+
+    elapsed = time.perf_counter() - start
+    print(f"✔ OK → {out_path} ({elapsed:.2f}s)")
+    decryption_logger.info(f"Single decrypt OK | {filename} | {elapsed:.2f}s")
+    return True
 
 
 # ============================================================
-# DECRYPT ALL
+# CHUNK-BASED AES-GCM DECRYPT
+# ============================================================
+def decrypt_file_chunked(base_name, encrypted_dir, private_key):
+    start = time.perf_counter()
+
+    print(f"\n=== DECRYPTING (chunked): {base_name} ===")
+
+    chunk_dir = encrypted_dir / f"{base_name}.chunks"
+    header_path = chunk_dir / "header.json"
+    key_path = encrypted_dir / f"{base_name}.key.enc"
+
+    if not header_path.exists():
+        print("Missing header.json for chunked file")
+        return False
+
+    header = json.loads(header_path.read_text())
+
+    encrypted_aes_key = key_path.read_bytes()
+    aes_key = private_key.decrypt(
+        encrypted_aes_key,
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+
+    out_path = Path(DATA_DIR) / "decrypted" / base_name
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(out_path, "wb") as fout:
+        for chunk in header["chunks"]:
+            chunk_file = chunk_dir / chunk["file"]
+
+            with open(chunk_file, "rb") as fin:
+                nonce = fin.read(NONCE_SIZE)
+                tag = fin.read(TAG_SIZE)
+                ciphertext = fin.read()
+
+            decryptor = Cipher(
+                algorithms.AES(aes_key),
+                modes.GCM(nonce, tag),
+            ).decryptor()
+
+            try:
+                plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+            except Exception:
+                print(f"TAG mismatch in chunk {chunk['file']}")
+                return False
+
+            fout.write(plaintext)
+
+    elapsed = time.perf_counter() - start
+    print(f"✔ OK → {out_path} ({elapsed:.2f}s)")
+    decryption_logger.info(f"Chunked decrypt OK | {base_name} | {elapsed:.2f}s")
+    return True
+
+
+# ============================================================
+# AUTO DETECT + DECRYPT
 # ============================================================
 def decrypt_all(password):
-    enc_folder = Path(DATA_DIR) / "downloaded_encrypted"
+    encrypted_dir = Path(DATA_DIR) / "encrypted"
+    private_key = load_private_key(password)
 
-    # Chỉ decrypt file .enc thật sự, KHÔNG decrypt .key.enc
-    cipher_files = [
-        f for f in enc_folder.glob("*.enc")
-        if not f.name.endswith(".key.enc")
-    ]
+    print("Scanning encrypted directory...")
 
-    print(f"Found {len(cipher_files)} encrypted files.")
+    # --------------------------------------------------
+    # 1. Collect ALL chunked base names (SOURCE OF TRUTH)
+    # --------------------------------------------------
+    chunked_bases = {
+        d.name.replace(".chunks", "")
+        for d in encrypted_dir.glob("*.chunks")
+        if d.is_dir()
+    }
 
-    for cipher_file in cipher_files:
-        base = cipher_file.stem  # remove .enc
-        key_file = enc_folder / f"{base}.key.enc"
-        meta_file = enc_folder / f"{base}.metadata.json"
+    # --------------------------------------------------
+    # 2. Decrypt CHUNKED files FIRST
+    # --------------------------------------------------
+    for base_name in sorted(chunked_bases):
+        decrypt_file_chunked(base_name, encrypted_dir, private_key)
 
-        decrypt_file(cipher_file, key_file, meta_file, password)
+    # --------------------------------------------------
+    # 3. Decrypt SINGLE files (ABSOLUTE SAFE)
+    # --------------------------------------------------
+    for cipher_file in encrypted_dir.glob("*.enc"):
+        # ❌ Never decrypt key files
+        if cipher_file.name.endswith(".key.enc"):
+            continue
 
+        base = cipher_file.stem
+
+        # 🔒 HARD BLOCK: if chunked exists, NEVER single-decrypt
+        if base in chunked_bases:
+            continue
+
+        key_file = encrypted_dir / f"{base}.key.enc"
+        meta_file = encrypted_dir / f"{base}.metadata.json"
+
+        decrypt_file_single(cipher_file, key_file, meta_file, private_key)
 
 
 # ============================================================
@@ -166,26 +187,30 @@ def decrypt_all(password):
 if __name__ == "__main__":
     import sys
 
-    args = sys.argv[1:]
     password = input("Enter RSA private key password: ").strip()
 
-    # Decrypt ALL
-    if "--all" in args:
+    if "--all" in sys.argv:
         decrypt_all(password)
         exit()
 
-    # Decrypt one file
-    if "--file" in args:
-        i = args.index("--file")
-        fname = args[i + 1]
+    if "--file" in sys.argv:
+        i = sys.argv.index("--file")
+        fname = sys.argv[i + 1]
 
-        cipher_path = Path(DATA_DIR) / "encrypted" / f"{fname}.enc"
-        key_path    = Path(DATA_DIR) / "encrypted" / f"{fname}.key.enc"
-        meta_path   = Path(DATA_DIR) / "encrypted" / f"{fname}.metadata.json"
+        encrypted_dir = Path(DATA_DIR) / "encrypted"
+        private_key = load_private_key(password)
 
-        decrypt_file(cipher_path, key_path, meta_path, password)
+        if (encrypted_dir / f"{fname}.chunks").exists():
+            decrypt_file_chunked(fname, encrypted_dir, private_key)
+        else:
+            decrypt_file_single(
+                encrypted_dir / f"{fname}.enc",
+                encrypted_dir / f"{fname}.key.enc",
+                encrypted_dir / f"{fname}.metadata.json",
+                private_key,
+            )
         exit()
 
     print("Usage:")
-    print("  python -m app.crypto.decryption --file <filename>")
     print("  python -m app.crypto.decryption --all")
+    print("  python -m app.crypto.decryption --file <filename>")

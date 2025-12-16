@@ -85,7 +85,7 @@ def upload_file_to_s3(local_path, s3_key):
 
     # Skip identical
     if remote_sha == local_sha:
-        print(f"⏭ Skipped (no change): {local_path}")
+        print(f"Skipped (no change): {local_path}")
         s3_upload_logger.info(
             f"SKIPPED | file={local_path} | reason=SHA256_match"
         )
@@ -115,7 +115,7 @@ def upload_file_to_s3(local_path, s3_key):
             multipart_upload(local_path, bucket, s3_key, metadata)
 
         elapsed = time.perf_counter() - start
-        print(f"✔ Uploaded {local_path} in {elapsed:.2f}s")
+        print(f"Uploaded {local_path} in {elapsed:.2f}s")
 
         s3_upload_logger.info(
             f"UPLOAD SUCCESS | file={local_path} | s3={s3_key} | sha256={local_sha} | time={elapsed:.2f}s"
@@ -123,7 +123,7 @@ def upload_file_to_s3(local_path, s3_key):
 
     except Exception as e:
         elapsed = time.perf_counter() - start
-        print(f"❌ Upload failed: {local_path} → {str(e)}")
+        print(f"Upload failed: {local_path} → {str(e)}")
 
         error_logger.error(
             f"UPLOAD FAIL | file={local_path} | s3_key={s3_key} | err={str(e)} | time={elapsed:.2f}s"
@@ -166,7 +166,7 @@ def upload_all_encrypted():
 
         upload_file_to_s3(str(path), s3_key)
 
-    print("✔ Completed incremental upload to S3.")
+    print("Completed incremental upload to S3.")
 
 
 # ============================================================
