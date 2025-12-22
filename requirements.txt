@@ -21,3 +21,6 @@ colorlog>=6.8.0
 
 # --- Scheduler (if your scheduler module uses APScheduler) ---
 APScheduler>=3.10.4
+
+# --- File system monitoring (if your app uses it) ---
+watchdog

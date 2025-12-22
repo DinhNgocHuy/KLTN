@@ -26,7 +26,7 @@
 │            S3 Upload Module                │
 │  - Upload *.enc, *.key.enc, metadata.json  │
 │  - Use multipart upload                    │
-│  - Ensure versioning + bucket policy        │
+│  - Ensure versioning + bucket policy       │
 └─────────────┬──────────────────────────────┘
               │
               ▼

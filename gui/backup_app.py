@@ -9,7 +9,7 @@ from app.storage.s3_upload import upload_all_encrypted
 from app.storage.s3_download import download_file_pair
 from app.storage.verify_integrity import verify_integrity
 from app.crypto.key_management import rotate_keys
-from app.settings import DATA_DIR, KEY_DIR
+from app.core.settings import DATA_DIR, KEY_DIR
 
 
 # ============================================================

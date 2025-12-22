@@ -7,8 +7,12 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
+from app.crypto.rsa_utils import (
+    get_current_rsa_version,
+    load_public_key_by_version,
+)
 
-from app.settings import (
+from app.core.settings import (
     AES_KEY_SIZE,
     NONCE_SIZE,
     TAG_SIZE,
@@ -19,8 +23,7 @@ from app.settings import (
     DATA_DIR,
 )
 
-from app.crypto.rsa_utils import load_public_key
-from app.logging_config import encryption_logger, error_logger
+from app.core.logging_config import encryption_logger, error_logger
 from app.utils.checksum import sha256_file
 
 
@@ -44,7 +47,8 @@ def encrypt_file_single_gcm(input_path, encrypted_path, encrypted_key_path):
     encryption_logger.info(f"START encrypt(single) | file={input_path}")
 
     try:
-        public_key = load_public_key()
+        key_version = get_current_rsa_version()
+        public_key = load_public_key_by_version(key_version)
 
         aes_key = os.urandom(AES_KEY_SIZE)
         nonce = os.urandom(NONCE_SIZE)
@@ -64,18 +68,12 @@ def encrypt_file_single_gcm(input_path, encrypted_path, encrypted_key_path):
         Path(encrypted_path).parent.mkdir(parents=True, exist_ok=True)
 
         with open(input_path, "rb") as fin, open(encrypted_path, "wb") as fout:
-            fout.write(nonce)
-            fout.write(b"\x00" * TAG_SIZE)
-
             while buf := fin.read(STREAM_BUFFER_SIZE):
                 fout.write(encryptor.update(buf))
 
             fout.write(encryptor.finalize())
             tag = encryptor.tag
-
-            fout.seek(NONCE_SIZE)
-            fout.write(tag)
-
+            
         Path(encrypted_key_path).write_bytes(encrypted_aes_key)
 
         checksum = sha256_file(encrypted_path)
@@ -85,6 +83,7 @@ def encrypt_file_single_gcm(input_path, encrypted_path, encrypted_key_path):
             "ciphertext_sha256": checksum,
             "nonce": nonce.hex(),
             "tag": tag.hex(),
+            "key_version": key_version,
         }
         Path(meta_path).write_text(json.dumps(metadata, indent=4))
 
@@ -97,7 +96,6 @@ def encrypt_file_single_gcm(input_path, encrypted_path, encrypted_key_path):
         error_logger.error(f"FAIL encrypt(single) | file={input_path} | err={e}")
         raise
 
-
 # ============================================================
 # CHUNK-BASED AES-GCM (FILE > 60GB)
 # ============================================================
@@ -105,7 +103,8 @@ def encrypt_file_chunked(input_path, encrypted_base_dir, encrypted_key_path):
     start = time.perf_counter()
     encryption_logger.info(f"START encrypt(chunked) | file={input_path}")
 
-    public_key = load_public_key()
+    key_version = get_current_rsa_version()
+    public_key = load_public_key_by_version(key_version)
 
     aes_key = os.urandom(AES_KEY_SIZE)
     encrypted_aes_key = public_key.encrypt(
@@ -214,17 +213,31 @@ def encrypt_all_in_folder(input_folder, encrypted_folder):
 if __name__ == "__main__":
     import sys
 
-    original = str(Path(DATA_DIR) / "original")
-    encrypted = str(Path(DATA_DIR) / "encrypted")
-
-    if not Path(KEY_DIR, "rsa_public.pem").exists():
-        raise RuntimeError("RSA public key not found")
+    if len(sys.argv) < 2:
+        raise RuntimeError(
+            "Usage: python -m app.crypto.encryption <input_file> | --all"
+        )
 
     if "--all" in sys.argv:
-        encrypt_all_in_folder(original, encrypted)
-    else:
-        sample_in = str(Path(original) / "sample.txt")
-        sample_out = str(Path(encrypted) / "sample.txt.enc")
-        sample_key = str(Path(encrypted) / "sample.txt.key.enc")
+        original = Path(DATA_DIR) / "original"
+        encrypted = Path(DATA_DIR) / "encrypted"
+        encrypt_all_in_folder(str(original), str(encrypted))
+        sys.exit(0)
 
-        encrypt_file(sample_in, sample_out, sample_key)
+    # encrypt single file
+    input_file = Path(sys.argv[1]).resolve()
+    if not input_file.exists():
+        raise FileNotFoundError(f"Input file not found: {input_file}")
+
+    encrypted_dir = Path(DATA_DIR) / "encrypted"
+    encrypted_dir.mkdir(parents=True, exist_ok=True)
+
+    encrypted_file = encrypted_dir / f"{input_file.name}.enc"
+    encrypted_key = encrypted_dir / f"{input_file.name}.key.enc"
+
+    encrypt_file(
+        str(input_file),
+        str(encrypted_file),
+        str(encrypted_key),
+    )
+

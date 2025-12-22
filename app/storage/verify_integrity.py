@@ -5,7 +5,7 @@ import boto3
 import sys
 import logging
 from pathlib import Path
-from app.settings import get_bucket_name, DATA_DIR
+from app.core.settings import get_bucket_name, DATA_DIR
 from app.utils.checksum import sha256_file
 
 # ============================================================

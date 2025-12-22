@@ -1,48 +1,59 @@
 import json
 import boto3
 import subprocess
+import logging
 from pathlib import Path
 from functools import lru_cache
 from botocore.exceptions import ClientError
-from app.logging_config import system_logger, error_logger
 
 # ============================================================
 # BASE DIRECTORIES
 # ============================================================
-BASE_DIR = Path(__file__).resolve().parent.parent
+# File: F:\KLTN\app\core\settings.py
+APP_DIR  = Path(__file__).resolve().parent.parent   # F:\KLTN\app
+BASE_DIR = APP_DIR.parent                           # F:\KLTN
 
-KEY_DIR = BASE_DIR / "keys"
-DATA_DIR = BASE_DIR / "data"
-LOG_DIR = BASE_DIR / "logs"
+KEY_DIR  = APP_DIR / "keys"                         # F:\KLTN\app\keys
+DATA_DIR = BASE_DIR / "data"                        # F:\KLTN\data
+LOG_DIR  = BASE_DIR / "logs"                        # F:\KLTN\logs
 
+# TẠO THƯ MỤC (giữ lại vì project bạn đang dùng trực tiếp)
 KEY_DIR.mkdir(exist_ok=True)
 DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
-# Terraform paths
-TERRAFORM_CORE = BASE_DIR / "infra/terraform/core"
-FALLBACK_CONFIG = BASE_DIR / "config.json"
+# ============================================================
+# LOGGER (KHÔNG IMPORT logging_config → KHÔNG CIRCULAR)
+# ============================================================
+system_logger = logging.getLogger("system")
+error_logger  = logging.getLogger("error")
 
 # ============================================================
 # ENCRYPTION / DECRYPTION PARAMETERS
 # ============================================================
 # AES-GCM
-AES_KEY_SIZE = 32                      # 256-bit
-NONCE_SIZE = 12                        # 96-bit recommended for AES-GCM
-TAG_SIZE = 16                          # 128-bit GCM tag
-CRYPTO_CHUNK_SIZE = 1024 * 1024 * 1024 # 1GB per chunk
-STREAM_BUFFER_SIZE = 1024 * 1024       # streaming size: 1MB
+AES_KEY_SIZE = 32                     # 256-bit
+NONCE_SIZE = 12                       # 96-bit
+TAG_SIZE = 16                         # 128-bit
+
+# streaming / chunking
+CRYPTO_CHUNK_SIZE = 1024 * 1024 * 1024   # 1GB (GIỮ NGUYÊN THEO CODE CỦA BẠN)
+STREAM_BUFFER_SIZE = 1024 * 1024         # 1MB
 MAX_GCM_BYTES = 60 * 1024 * 1024 * 1024  # 60GB safe threshold
 
-# RSA PARAMETERS
-RSA_KEY_SIZE = 4096   # recommended for security
+# RSA
+RSA_KEY_SIZE = 4096
 RSA_PUBLIC_EXPONENT = 65537
 
+# ============================================================
+# TERRAFORM PATHS
+# ============================================================
+TERRAFORM_CORE  = BASE_DIR / "infra/terraform/core"
+FALLBACK_CONFIG = BASE_DIR / "config.json"
 
 # ============================================================
 # TERRAFORM → GET S3 BUCKET NAME
 # ============================================================
-@lru_cache(maxsize=1)
 @lru_cache(maxsize=1)
 def get_bucket_name():
     """
@@ -56,7 +67,7 @@ def get_bucket_name():
 
     # --- 1. Terraform output ---
     try:
-        system_logger.info("Reading S3 bucket name from Terraform output...")
+        system_logger.info("Reading S3 bucket name from Terraform output")
 
         result = subprocess.run(
             ["terraform", "output", "-json"],
@@ -77,19 +88,20 @@ def get_bucket_name():
     if not bucket_name and FALLBACK_CONFIG.exists():
         system_logger.warning("Using fallback config.json")
         try:
-            cfg = json.load(open(FALLBACK_CONFIG, "r"))
+            with open(FALLBACK_CONFIG, "r") as f:
+                cfg = json.load(f)
             bucket_name = cfg.get("bucket_name")
         except Exception as e:
             error_logger.error(f"Failed reading fallback config.json: {e}")
 
     if not bucket_name:
-        error_logger.error("S3 bucket name not found in any source.")
+        error_logger.error("S3 bucket name not found in any source")
         return None
 
-    # --- 3. REALITY CHECK: AWS ---
+    # --- 3. Reality check: AWS ---
     if not bucket_exists(bucket_name):
         error_logger.error(
-            f"S3 bucket '{bucket_name}' is configured but does not exist in AWS."
+            f"S3 bucket '{bucket_name}' is configured but does not exist"
         )
         return None
 
@@ -108,20 +120,23 @@ def bucket_exists(bucket_name: str) -> bool:
         return True
 
     except ClientError as e:
-        error_code = int(e.response["Error"]["Code"])
+        code = e.response.get("Error", {}).get("Code")
 
-        if error_code == 404:
-            system_logger.error(f"S3 bucket '{bucket_name}' does not exist.")
+        if code == "404":
+            error_logger.error(f"S3 bucket '{bucket_name}' does not exist")
         else:
-            system_logger.error(
-                f"Unable to access S3 bucket '{bucket_name}': {e}"
-            )
+            error_logger.error(f"Unable to access S3 bucket '{bucket_name}': {e}")
+
         return False
-    
+
+
 # ============================================================
 # SELF-TEST
 # ============================================================
 if __name__ == "__main__":
-    print("Bucket:", get_bucket_name())
-    print("KEY_DIR:", KEY_DIR)
+    print("APP_DIR :", APP_DIR)
+    print("BASE_DIR:", BASE_DIR)
+    print("KEY_DIR :", KEY_DIR)
     print("DATA_DIR:", DATA_DIR)
+    print("LOG_DIR :", LOG_DIR)
+    print("Bucket  :", get_bucket_name())

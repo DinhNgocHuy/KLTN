@@ -7,8 +7,8 @@ import boto3
 from pathlib import Path
 from botocore.exceptions import ClientError
 
-from app.logging_config import s3_upload_logger, error_logger
-from app.settings import get_bucket_name, DATA_DIR
+from app.core.logging_config import s3_upload_logger, error_logger
+from app.core.settings import get_bucket_name, DATA_DIR
 from app.utils.checksum import sha256_file
 
 # ============================================================

@@ -2,12 +2,12 @@ import time
 import schedule
 from datetime import datetime
 
-from app.logging_config import system_logger
+from app.core.logging_config import system_logger
 from app.storage.verify_integrity import verify_all_files
 from app.crypto.key_management import rotate_keys
 from app.crypto.encryption import encrypt_all_in_folder
 from app.storage.s3_upload import upload_folder
-from app.settings import DATA_DIR
+from app.core.settings import DATA_DIR
 
 
 # ============================================================
