@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
+from app.core.logging_config import system_logger, error_logger
 
 DEFAULT_CONFIG = {
     "aws": {},
     "auto_backup": {
-        "enabled": False,
+        "enabled": True,
         "watch_folder": ""
     }
 }
@@ -14,6 +15,9 @@ CONFIG_FILE = Path("config.json")
 
 def load_config() -> dict:
     if not CONFIG_FILE.exists():
+        system_logger.warning(
+            "config.json not found. Creating default config."
+        )
         save_config(DEFAULT_CONFIG)
         return DEFAULT_CONFIG.copy()
 

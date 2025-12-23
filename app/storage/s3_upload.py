@@ -1,7 +1,5 @@
 import os
 import time
-import glob
-import hashlib
 import boto3
 
 from pathlib import Path
@@ -11,9 +9,11 @@ from app.core.logging_config import s3_upload_logger, error_logger
 from app.core.settings import get_bucket_name, DATA_DIR
 from app.utils.checksum import sha256_file
 
+
 # ============================================================
 # GET REMOTE SHA256 FROM S3 (metadata)
 # ============================================================
+
 def s3_get_remote_sha(bucket, key):
     s3 = boto3.client("s3")
     try:
@@ -26,6 +26,7 @@ def s3_get_remote_sha(bucket, key):
 # ============================================================
 # MULTIPART UPLOAD (for files > 5GB)
 # ============================================================
+
 def multipart_upload(local_path, bucket, key, metadata):
     s3 = boto3.client("s3")
     mp = s3.create_multipart_upload(Bucket=bucket, Key=key, Metadata=metadata)
@@ -60,7 +61,6 @@ def multipart_upload(local_path, bucket, key, metadata):
         )
 
     except Exception as e:
-        # Abort upload on failure (BEST PRACTICE)
         s3.abort_multipart_upload(
             Bucket=bucket,
             Key=key,
@@ -70,8 +70,9 @@ def multipart_upload(local_path, bucket, key, metadata):
 
 
 # ============================================================
-# SINGLE OR MULTIPART UPLOAD
+# SINGLE FILE UPLOAD (CORE)
 # ============================================================
+
 def upload_file_to_s3(local_path, s3_key):
     bucket = get_bucket_name()
     if not bucket:
@@ -83,9 +84,8 @@ def upload_file_to_s3(local_path, s3_key):
     local_sha = sha256_file(local_path)
     remote_sha = s3_get_remote_sha(bucket, s3_key)
 
-    # Skip identical
+    # Skip identical file
     if remote_sha == local_sha:
-        print(f"Skipped (no change): {local_path}")
         s3_upload_logger.info(
             f"SKIPPED | file={local_path} | reason=SHA256_match"
         )
@@ -98,11 +98,10 @@ def upload_file_to_s3(local_path, s3_key):
         "upload_time": str(int(time.time())),
     }
 
-    print(f"Uploading {local_path} → s3://{bucket}/{s3_key}")
     start = time.perf_counter()
 
     try:
-        if filesize < 5 * 1024 * 1024 * 1024:  # <5GB
+        if filesize < 5 * 1024 * 1024 * 1024:
             s3 = boto3.client("s3")
             with open(local_path, "rb") as f:
                 s3.put_object(
@@ -115,16 +114,12 @@ def upload_file_to_s3(local_path, s3_key):
             multipart_upload(local_path, bucket, s3_key, metadata)
 
         elapsed = time.perf_counter() - start
-        print(f"Uploaded {local_path} in {elapsed:.2f}s")
-
         s3_upload_logger.info(
-            f"UPLOAD SUCCESS | file={local_path} | s3={s3_key} | sha256={local_sha} | time={elapsed:.2f}s"
+            f"UPLOAD OK | file={local_path} | s3={s3_key} | sha256={local_sha} | time={elapsed:.2f}s"
         )
 
     except Exception as e:
         elapsed = time.perf_counter() - start
-        print(f"Upload failed: {local_path} → {str(e)}")
-
         error_logger.error(
             f"UPLOAD FAIL | file={local_path} | s3_key={s3_key} | err={str(e)} | time={elapsed:.2f}s"
         )
@@ -132,29 +127,20 @@ def upload_file_to_s3(local_path, s3_key):
 
 
 # ============================================================
-# SCAN & UPLOAD ALL ENCRYPTED ARTIFACTS
+# UPLOAD ALL ENCRYPTED ARTIFACTS (GUI / CLI)
 # ============================================================
+
 def upload_all_encrypted():
-    bucket = get_bucket_name()
-    if not bucket:
-        raise ValueError("Bucket name undefined.")
-
     base_dir = Path(DATA_DIR) / "encrypted"
-    print(f"Scanning folder: {base_dir}")
 
-    files = list(base_dir.glob("*"))
-
-    upload_files = [
-        f for f in files
+    files = [
+        f for f in base_dir.glob("*")
         if f.suffix in [".enc", ".json"] or f.name.endswith(".key.enc")
     ]
 
-    print(f"Found {len(upload_files)} encrypted files to upload.")
-
-    for path in upload_files:
+    for path in files:
         name = path.name
 
-        # classify S3 path
         if name.endswith(".enc") and not name.endswith(".key.enc"):
             s3_key = f"encrypted/{name}"
         elif name.endswith(".key.enc"):
@@ -166,12 +152,41 @@ def upload_all_encrypted():
 
         upload_file_to_s3(str(path), s3_key)
 
-    print("Completed incremental upload to S3.")
+
+# ============================================================
+# UPLOAD WHOLE FOLDER (SCHEDULER API)
+# ============================================================
+
+def upload_folder(folder_path):
+    """
+    Wrapper for scheduler.
+    Upload all encrypted artifacts inside given folder.
+    """
+    folder_path = Path(folder_path)
+
+    if not folder_path.exists():
+        error_logger.error(f"Upload folder not found: {folder_path}")
+        return
+
+    for path in folder_path.glob("*"):
+        name = path.name
+
+        if name.endswith(".enc") and not name.endswith(".key.enc"):
+            s3_key = f"encrypted/{name}"
+        elif name.endswith(".key.enc"):
+            s3_key = f"keys/{name}"
+        elif name.endswith(".metadata.json"):
+            s3_key = f"metadata/{name}"
+        else:
+            continue
+
+        upload_file_to_s3(str(path), s3_key)
 
 
 # ============================================================
 # CLI
 # ============================================================
+
 if __name__ == "__main__":
     import sys
     if "--all" in sys.argv:

@@ -155,3 +155,19 @@ def start_folder_watcher():
 
     system_logger.info(f"Auto backup watcher started for folder: {watch_folder}")
     return observer
+
+if __name__ == "__main__":
+    observer = start_folder_watcher()
+
+    if observer is None:
+        system_logger.warning("Folder watcher not started.")
+        exit(0)
+
+    try:
+        system_logger.info("Folder watcher is running. Press Ctrl+C to stop.")
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        system_logger.info("Stopping folder watcher...")
+        observer.stop()
+        observer.join()

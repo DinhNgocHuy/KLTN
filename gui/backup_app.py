@@ -1,190 +1,299 @@
-import customtkinter as ctk
-from tkinter import filedialog, messagebox
-import threading
 import os
+import threading
+import queue
+import logging
+from pathlib import Path
+import boto3
+from botocore.exceptions import ClientError
 
-from app.crypto.encryption import encrypt_file
-from app.crypto.decryption import decrypt_file
-from app.storage.s3_upload import upload_all_encrypted
-from app.storage.s3_download import download_file_pair
-from app.storage.verify_integrity import verify_integrity
+import customtkinter as ctk
+from tkinter import filedialog
+
+from app.crypto.encryption import encrypt_all_in_folder
 from app.crypto.key_management import rotate_keys
-from app.core.settings import DATA_DIR, KEY_DIR
+from app.crypto.rsa_utils import (
+    generate_rsa_keys,
+    get_current_rsa_version,
+    set_current_rsa_version,
+)
+from app.core.settings import DATA_DIR
+from app.storage.s3_upload import upload_all_encrypted
 
+# =========================
+# CONSTANT
+# =========================
+DEFAULT_REGION = "ap-southeast-1"
+LOG_DIR = Path(DATA_DIR).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
 
-# ============================================================
-# GUI CLASS
-# ============================================================
+# =========================
+# LOGGING (GLOBAL)
+# =========================
+log_queue = queue.Queue()
+
+class UILogHandler(logging.Handler):
+    def emit(self, record):
+        log_queue.put(self.format(record))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_DIR / "app.log"),
+        UILogHandler(),
+    ],
+)
+
+# =========================
+# MAIN APP
+# =========================
 class BackupApp(ctk.CTk):
+
     def __init__(self):
         super().__init__()
 
         self.title("Secure Backup System – AES-GCM + RSA + S3")
-        self.geometry("860x600")
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
+        self.geometry("1100x700")
 
-        # Selected file
-        self.input_file = None
+        # ===== SYSTEM STATE =====
+        self.s3_ready = False
+        self.rsa_ready = False
+        self.selected_folder = None
 
-        # Layout
-        self.create_ui()
+        # ===== UI =====
+        self._build_layout()
+        self.after(200, self._poll_log)
 
-    # --------------------------------------------------------
-    # LOGGING PANEL
-    # --------------------------------------------------------
-    def log(self, text: str):
-        self.log_box.configure(state="normal")
-        self.log_box.insert("end", f"{text}\n")
-        self.log_box.configure(state="disabled")
-        self.log_box.see("end")
+    # =========================
+    # LAYOUT
+    # =========================
+    def _build_layout(self):
+        self.sidebar = ctk.CTkFrame(self, width=180)
+        self.sidebar.pack(side="left", fill="y")
 
-    # --------------------------------------------------------
-    # UI
-    # --------------------------------------------------------
-    def create_ui(self):
+        self.content = ctk.CTkFrame(self)
+        self.content.pack(side="right", expand=True, fill="both")
 
-        # LEFT PANEL
-        left = ctk.CTkFrame(self, width=300, corner_radius=10)
-        left.pack(side="left", fill="y", padx=10, pady=10)
+        ctk.CTkLabel(
+            self.sidebar,
+            text="Secure Backup",
+            font=("Arial", 18, "bold"),
+        ).pack(pady=20)
 
-        title = ctk.CTkLabel(left, text="Backup Controls", font=("Arial", 22, "bold"))
-        title.pack(pady=15)
+        for name, cmd in [
+            ("Backup", self.show_backup),
+            ("Restore", self.show_restore),
+            ("Verify", self.show_verify),
+            ("Settings", self.show_settings),
+        ]:
+            ctk.CTkButton(self.sidebar, text=name, command=cmd).pack(
+                pady=6, padx=10, fill="x"
+            )
 
-        # Choose File
-        choose_btn = ctk.CTkButton(left, text="Choose File", command=self.choose_file)
-        choose_btn.pack(pady=10)
+        self.log_box = ctk.CTkTextbox(self.content, height=200)
+        self.log_box.pack(side="bottom", fill="x", padx=10, pady=10)
 
-        self.file_label = ctk.CTkLabel(left, text="No file selected", wraplength=250)
-        self.file_label.pack(pady=10)
+        self.show_settings()
 
-        # Encrypt + Upload
-        enc_btn = ctk.CTkButton(left, text="Encrypt & Upload", command=self.run_encrypt_upload)
-        enc_btn.pack(pady=10)
+    def _clear_content(self):
+        for w in self.content.winfo_children():
+            if w is not self.log_box:
+                w.destroy()
 
-        # Download + Decrypt
-        dec_btn = ctk.CTkButton(left, text="Download & Decrypt", command=self.run_download_decrypt)
-        dec_btn.pack(pady=10)
+    # =========================
+    # BACKUP TAB
+    # =========================
+    def show_backup(self):
+        self._clear_content()
 
-        # Verify
-        verify_btn = ctk.CTkButton(left, text="Verify Integrity", command=self.run_verify)
-        verify_btn.pack(pady=10)
+        ctk.CTkLabel(
+            self.content,
+            text="Backup – Encrypt & Upload (Folder)",
+            font=("Arial", 20, "bold"),
+        ).pack(pady=20)
 
-        # Rotate Keys
-        rotate_btn = ctk.CTkButton(left, text="Rotate RSA Keys", command=self.run_rotate)
-        rotate_btn.pack(pady=10)
+        ctk.CTkButton(
+            self.content,
+            text="Choose Folder",
+            command=self.choose_folder,
+        ).pack(pady=10)
 
-        # RIGHT PANEL — LOG BOX
-        right = ctk.CTkFrame(self, corner_radius=10)
-        right.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+        self.folder_label = ctk.CTkLabel(
+            self.content,
+            text="No folder selected",
+        )
+        self.folder_label.pack()
 
-        ctk.CTkLabel(right, text="System Log", font=("Arial", 20, "bold")).pack(pady=10)
+        self.btn_backup = ctk.CTkButton(
+            self.content,
+            text="Encrypt & Upload",
+            command=self.run_backup,
+        )
+        self.btn_backup.pack(pady=20)
 
-        self.log_box = ctk.CTkTextbox(right, state="disabled", font=("Consolas", 13))
-        self.log_box.pack(fill="both", expand=True, pady=10)
+        if self.s3_ready and self.rsa_ready:
+            self.btn_backup.configure(state="normal")
+        else:
+            self.btn_backup.configure(state="disabled")
 
-    # --------------------------------------------------------
-    # ACTIONS
-    # --------------------------------------------------------
+    def choose_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.selected_folder = path
+            self.folder_label.configure(text=path)
+            logging.info(f"Selected folder: {path}")
 
-    def choose_file(self):
-        file = filedialog.askopenfilename()
-        if file:
-            self.input_file = file
-            self.file_label.configure(text=file)
-            self.log(f"[SELECT] {file}")
-
-    # -----------------------------------
-    # Encrypt + Upload
-    # -----------------------------------
-    def run_encrypt_upload(self):
-        if not self.input_file:
-            messagebox.showerror("Error", "Please choose a file first.")
+    def run_backup(self):
+        if not self.selected_folder:
+            logging.error("No folder selected")
             return
-        threading.Thread(target=self.encrypt_upload).start()
 
-    def encrypt_upload(self):
-        file = self.input_file
-        basename = os.path.basename(file)
+        def worker():
+            try:
+                logging.info("Encrypting folder...")
+                encrypt_all_in_folder(self.selected_folder)
+                logging.info("Uploading encrypted data to S3...")
+                upload_all_encrypted()
+                logging.info("Backup completed successfully")
+            except Exception:
+                logging.exception("Backup failed")
 
-        enc_path = f"{DATA_DIR}/encrypted/{basename}.enc"
-        key_path = f"{DATA_DIR}/encrypted/{basename}.key.enc"
+        threading.Thread(target=worker, daemon=True).start()
 
-        self.log(f"Encrypting: {file}")
+    # =========================
+    # SETTINGS TAB
+    # =========================
+    def show_settings(self):
+        self._clear_content()
 
-        # Ask for RSA password
-        password = ctk.CTkInputDialog(text="Enter RSA password:", title="Password").get_input()
+        ctk.CTkLabel(
+            self.content,
+            text="Settings & Connectivity",
+            font=("Arial", 20, "bold"),
+        ).pack(pady=20)
 
+        self.aws_key = ctk.CTkEntry(self.content, placeholder_text="AWS Access Key")
+        self.aws_key.pack(fill="x", padx=80, pady=5)
+
+        self.aws_secret = ctk.CTkEntry(
+            self.content,
+            placeholder_text="AWS Secret Key",
+            show="*",
+        )
+        self.aws_secret.pack(fill="x", padx=80, pady=5)
+
+        self.bucket_entry = ctk.CTkEntry(
+            self.content,
+            placeholder_text="S3 Bucket Name",
+        )
+        self.bucket_entry.pack(fill="x", padx=80, pady=5)
+
+        ctk.CTkButton(
+            self.content,
+            text="Connect / Init S3",
+            command=self.init_s3,
+        ).pack(pady=10)
+
+        ctk.CTkLabel(
+            self.content,
+            text=f"RSA Key Directory:\n{Path(DATA_DIR).parent / 'keys'}",
+        ).pack(pady=20)
+
+        ctk.CTkButton(
+            self.content,
+            text="Generate RSA Key (v1)",
+            command=self.init_rsa,
+        ).pack(pady=5)
+
+        ctk.CTkButton(
+            self.content,
+            text="Rotate RSA Key",
+            command=self.rotate_rsa,
+        ).pack(pady=5)
+
+    def init_s3(self):
         try:
-            encrypt_file(file, enc_path, key_path, password=password)
-            self.log(f"✓ Encryption complete: {enc_path}")
+            os.environ["AWS_ACCESS_KEY_ID"] = self.aws_key.get().strip()
+            os.environ["AWS_SECRET_ACCESS_KEY"] = self.aws_secret.get().strip()
+            bucket = self.bucket_entry.get().strip()
 
-            upload_all_encrypted(enc_path, key_path)
-            self.log("✓ Uploaded to S3 successfully")
+            if not bucket:
+                raise ValueError("Bucket name is empty")
 
-        except Exception as e:
-            self.log(f"ERROR: {str(e)}")
-            messagebox.showerror("Error", str(e))
+            s3 = boto3.client("s3", region_name=DEFAULT_REGION)
 
-    # -----------------------------------
-    # Download + Decrypt
-    # -----------------------------------
-    def run_download_decrypt(self):
-        threading.Thread(target=self.download_decrypt).start()
+            try:
+                s3.head_bucket(Bucket=bucket)
+                logging.info(f"S3 bucket ready: {bucket}")
+            except ClientError:
+                s3.create_bucket(
+                    Bucket=bucket,
+                    CreateBucketConfiguration={
+                        "LocationConstraint": DEFAULT_REGION
+                    },
+                )
+                logging.info(f"S3 bucket created: {bucket}")
 
-    def download_decrypt(self):
-        filename = ctk.CTkInputDialog(text="Enter filename (without .enc):", title="Download").get_input()
+            os.environ["AWS_S3_BUCKET"] = bucket
+            self.s3_ready = True
 
-        enc_local, key_local, _ = download_file_pair(filename)
+        except Exception:
+            self.s3_ready = False
+            logging.exception("S3 init failed")
 
-        if not enc_local:
-            self.log("Download failed")
+    def init_rsa(self):
+        try:
+            get_current_rsa_version()
+            self.rsa_ready = True
+            logging.info("RSA already initialized")
+            return
+        except Exception:
+            pass
+
+        pw = ctk.CTkInputDialog(
+            text="Password for RSA v1 (min 6 chars):",
+            title="RSA",
+        ).get_input()
+
+        if not pw or len(pw) < 6:
+            logging.error("Invalid RSA password")
             return
 
-        password = ctk.CTkInputDialog(text="Enter RSA password:", title="Decrypt").get_input()
+        generate_rsa_keys(pw, "v1")
+        set_current_rsa_version("v1")
+        self.rsa_ready = True
+        logging.info("RSA v1 generated")
 
-        output_path = f"{DATA_DIR}/restored/{filename}"
+    def rotate_rsa(self):
+        pw = ctk.CTkInputDialog(
+            text="Old RSA password:",
+            title="Rotate RSA",
+        ).get_input()
 
-        decrypt_file(enc_local, key_local, output_path, password)
-        self.log(f"✓ File decrypted → {output_path}")
+        if pw:
+            rotate_keys(pw)
 
-    # -----------------------------------
-    # Verify Integrity
-    # -----------------------------------
-    def run_verify(self):
-        threading.Thread(target=self.verify).start()
+    # =========================
+    # OTHER TABS (PLACEHOLDER)
+    # =========================
+    def show_restore(self):
+        self._clear_content()
+        ctk.CTkLabel(self.content, text="Restore – TODO").pack(pady=50)
 
-    def verify(self):
-        filename = ctk.CTkInputDialog(text="Enter filename:", title="Verify").get_input()
+    def show_verify(self):
+        self._clear_content()
+        ctk.CTkLabel(self.content, text="Verify – TODO").pack(pady=50)
 
-        ok = verify_integrity(filename)
-        if ok:
-            self.log(f"✓ Integrity OK → {filename}")
-        else:
-            self.log(f"✗ FAILED → {filename}")
-
-    # -----------------------------------
-    # Rotate RSA Keys
-    # -----------------------------------
-    def run_rotate(self):
-        threading.Thread(target=self.rotate).start()
-
-    def rotate(self):
-        old_pass = ctk.CTkInputDialog(text="Enter OLD RSA password:", title="RSA Rotation").get_input()
-        if not old_pass:
-            return
-
-        self.log("Rotating RSA keys…")
-        ok = rotate_keys(old_pass)
-        if ok:
-            self.log("✓ RSA key rotation completed")
-        else:
-            self.log("✗ Rotation failed")
+    # =========================
+    # LOG POLLING
+    # =========================
+    def _poll_log(self):
+        while not log_queue.empty():
+            self.log_box.insert("end", log_queue.get() + "\n")
+            self.log_box.see("end")
+        self.after(200, self._poll_log)
 
 
-# ============================================================
-# RUN
-# ============================================================
 if __name__ == "__main__":
     app = BackupApp()
     app.mainloop()

@@ -1,6 +1,6 @@
 import time
+import threading
 import schedule
-from datetime import datetime
 
 from app.core.logging_config import system_logger
 from app.storage.verify_integrity import verify_all_files
@@ -11,26 +11,21 @@ from app.core.settings import DATA_DIR
 
 
 # ============================================================
-# 1) Integrity Check Job
+# JOB DEFINITIONS
 # ============================================================
+
 def job_verify_integrity():
     system_logger.info("[SCHEDULER] Running integrity check...")
     verify_all_files()
     system_logger.info("[SCHEDULER] Integrity check completed.")
 
 
-# ============================================================
-# 2) Key Rotation Job
-# ============================================================
 def job_rotate_rsa_keys():
     system_logger.info("[SCHEDULER] Running RSA key rotation...")
     rotate_keys()
     system_logger.info("[SCHEDULER] Key rotation completed.")
 
 
-# ============================================================
-# 3) Auto Backup Job
-# ============================================================
 def job_auto_backup():
     system_logger.info("[SCHEDULER] Running automated backup...")
 
@@ -44,21 +39,44 @@ def job_auto_backup():
 
 
 # ============================================================
-# 4) Register Scheduled Tasks
+# SCHEDULER CONTROLLER (THREAD-SAFE)
 # ============================================================
-def start_scheduler():
-    system_logger.info("[SCHEDULER] Starting task scheduler...")
 
-    # Run daily integrity check at 02:00
-    schedule.every().day.at("02:00").do(job_verify_integrity)
+class BackupScheduler:
+    def __init__(self):
+        self._running = False
+        self._thread = None
 
-    # Rotate keys every 30 days
-    schedule.every(30).days.do(job_rotate_rsa_keys)
+    def register_jobs(self):
+        schedule.clear()
 
-    # Automated backup every night at 03:00
-    schedule.every().day.at("03:00").do(job_auto_backup)
+        schedule.every().day.at("02:00").do(job_verify_integrity)
+        schedule.every(30).days.do(job_rotate_rsa_keys)
+        schedule.every().day.at("03:00").do(job_auto_backup)
 
-    # Main loop
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+        system_logger.info("[SCHEDULER] Jobs registered")
+
+    def start(self):
+        if self._running:
+            system_logger.warning("[SCHEDULER] Already running")
+            return
+
+        self._running = True
+        self.register_jobs()
+
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True
+        )
+        self._thread.start()
+
+        system_logger.info("[SCHEDULER] Scheduler started")
+
+    def stop(self):
+        self._running = False
+        system_logger.info("[SCHEDULER] Scheduler stopped")
+
+    def _run(self):
+        while self._running:
+            schedule.run_pending()
+            time.sleep(1)

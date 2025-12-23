@@ -1,135 +1,142 @@
 import os
 import json
-import hashlib
 import boto3
 import sys
 import logging
 from pathlib import Path
+
 from app.core.settings import get_bucket_name, DATA_DIR
 from app.utils.checksum import sha256_file
 
 # ============================================================
 # LOGGING
 # ============================================================
+
 LOG_DIR = Path(DATA_DIR).parent / "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 verify_logger = logging.getLogger("verify_integrity")
 verify_logger.setLevel(logging.INFO)
-fh = logging.FileHandler(LOG_DIR / "verify_integrity.log")
-fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-verify_logger.addHandler(fh)
+
+if not verify_logger.handlers:
+    fh = logging.FileHandler(LOG_DIR / "verify_integrity.log")
+    fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    verify_logger.addHandler(fh)
 
 verify_error_logger = logging.getLogger("verify_integrity_error")
 verify_error_logger.setLevel(logging.ERROR)
-efh = logging.FileHandler(LOG_DIR / "verify_integrity_error.log")
-efh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-verify_error_logger.addHandler(efh)
+
+if not verify_error_logger.handlers:
+    efh = logging.FileHandler(LOG_DIR / "verify_integrity_error.log")
+    efh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    verify_error_logger.addHandler(efh)
 
 
 # ============================================================
-# VERIFY LOCAL (after download)
+# CORE VERIFY LOGIC
 # ============================================================
-def verify_local(enc_file_path):
-    """Verify .enc file integrity using metadata.json (local)."""
 
+def verify_local(enc_file_path: str) -> bool:
+    """
+    Verify local .enc file using its metadata.json
+    """
     base = enc_file_path.replace(".enc", "")
     metadata_path = f"{base}.metadata.json"
 
     if not os.path.exists(metadata_path):
-        print(f"Metadata not found: {metadata_path}")
         verify_error_logger.error(f"Missing metadata: {metadata_path}")
         return False
 
     metadata = json.loads(open(metadata_path, "r").read())
 
-    required = ["ciphertext_sha256", "nonce", "tag"]
-    for k in required:
-        if k not in metadata:
-            print(f"Missing field `{k}` in metadata.")
-            verify_error_logger.error(f"Missing `{k}` in {metadata_path}")
-            return False
+    expected_sha = metadata.get("ciphertext_sha256")
+    if not expected_sha:
+        verify_error_logger.error(f"Missing ciphertext_sha256 in {metadata_path}")
+        return False
 
-    expected_sha = metadata["ciphertext_sha256"]
     actual_sha = sha256_file(enc_file_path)
 
-    print(f"Expected SHA256: {expected_sha}")
-    print(f"Actual   SHA256: {actual_sha}")
-
     if actual_sha != expected_sha:
-        print("Local integrity FAILED.")
         verify_error_logger.error(
             f"Local verify FAIL | file={enc_file_path} | expected={expected_sha} | actual={actual_sha}"
         )
         return False
 
-    print("Local integrity OK.")
     verify_logger.info(f"Local verify OK | file={enc_file_path}")
     return True
 
-# ============================================================
-# VERIFY ON S3 (without downloading .enc)
-# ============================================================
-def verify_on_s3(filename):
-    """
-    Verify integrity on S3:
-    - Load metadata/{filename}.metadata.json
-    - Load S3 metadata from encrypted/{filename}.enc
-    - Compare SHA256
-    """
 
+def verify_on_s3(filename: str) -> bool:
+    """
+    Verify integrity of encrypted file on S3 without downloading it
+    """
     BUCKET = get_bucket_name()
     s3 = boto3.client("s3")
 
     meta_key = f"metadata/{filename}.metadata.json"
     enc_key = f"encrypted/{filename}.enc"
 
-    print(f"\n=== VERIFY ON S3: {filename} ===")
-
-    # 1) Fetch metadata.json from S3
     try:
         obj = s3.get_object(Bucket=BUCKET, Key=meta_key)
         metadata = json.loads(obj["Body"].read())
     except Exception as e:
-        print(f"Cannot fetch metadata.json: {meta_key} — {e}")
+        verify_error_logger.error(f"Cannot fetch metadata.json: {e}")
         return False
 
     expected_sha = metadata.get("ciphertext_sha256")
     if not expected_sha:
-        print("metadata.json missing field: ciphertext_sha256")
+        verify_error_logger.error("metadata.json missing ciphertext_sha256")
         return False
 
-    # 2) Fetch SHA256 from S3 object metadata
     try:
         head = s3.head_object(Bucket=BUCKET, Key=enc_key)
         remote_sha = head.get("Metadata", {}).get("sha256")
     except Exception as e:
-        print(f"Cannot read S3 metadata: {enc_key} — {e}")
+        verify_error_logger.error(f"Cannot read S3 metadata: {e}")
         return False
 
     if not remote_sha:
-        print("S3 metadata missing sha256")
+        verify_error_logger.error("S3 object metadata missing sha256")
         return False
 
-    print(f"Metadata.json SHA256 : {expected_sha}")
-    print(f"S3 object SHA256     : {remote_sha}")
-
-    # 3) Compare
     if expected_sha != remote_sha:
-        print("✗ INTEGRITY FAIL — File on S3 is corrupted or modified.")
         verify_error_logger.error(
-            f"S3 integrity FAIL | file={filename}.enc | expected={expected_sha} | actual={remote_sha}"
+            f"S3 verify FAIL | file={filename}.enc | expected={expected_sha} | actual={remote_sha}"
         )
         return False
 
-    print("✓ S3 integrity OK — File is valid.")
     verify_logger.info(f"S3 verify OK | file={filename}.enc")
     return True
 
 
 # ============================================================
+# UNIFIED API (USED BY GUI & SCHEDULER)
+# ============================================================
+
+def verify_integrity(filename: str) -> bool:
+    """
+    GUI/Scheduler entrypoint.
+    Verify encrypted file in local encrypted folder by filename.
+    """
+    enc_path = Path(DATA_DIR) / "encrypted" / f"{filename}.enc"
+    return verify_local(str(enc_path))
+
+
+def verify_all_files():
+    """
+    Scheduler entrypoint.
+    Verify all encrypted files in local encrypted folder.
+    """
+    encrypted_dir = Path(DATA_DIR) / "encrypted"
+
+    for enc_file in encrypted_dir.glob("*.enc"):
+        verify_local(str(enc_file))
+
+
+# ============================================================
 # CLI
 # ============================================================
+
 if __name__ == "__main__":
     args = sys.argv
 
@@ -142,12 +149,10 @@ if __name__ == "__main__":
     mode = args[1]
 
     if mode == "--local":
-        enc_path = args[2]
-        verify_local(enc_path)
+        verify_local(args[2])
 
     elif mode == "--s3":
-        filename = args[2]
-        verify_on_s3(filename)
+        verify_on_s3(args[2])
 
     else:
         print("Invalid option. Use --local or --s3")

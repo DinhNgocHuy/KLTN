@@ -15,7 +15,6 @@ from app.crypto.rsa_utils import (
 )
 from app.storage.s3_upload import upload_file_to_s3
 
-
 # ============================================================
 # HELPERS
 # ============================================================
@@ -37,7 +36,6 @@ def load_metadata(key_file: Path) -> dict:
 
     return json.loads(meta_file.read_text(encoding="utf-8"))
 
-
 def save_metadata(key_file: Path, metadata: dict):
     base = key_file.name.replace(".key.enc", "")
     meta_file = key_file.parent / f"{base}.metadata.json"
@@ -51,7 +49,6 @@ def save_metadata(key_file: Path, metadata: dict):
         local_path=str(meta_file),
         s3_key=f"metadata/{meta_file.name}"
     )
-
 
 # ============================================================
 # ROTATE RSA KEYS (ENVELOPE ROTATION)
