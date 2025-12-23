@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -47,6 +48,7 @@ def __get_rsa_padding():
 # DECRYPT FILE
 # ============================================================
 def decrypt_file(enc_file: Path, password: str):
+    start = time.perf_counter()
     metadata = load_metadata(enc_file)
 
     rsa_version = metadata["key_version"]
@@ -74,8 +76,9 @@ def decrypt_file(enc_file: Path, password: str):
             f_out.write(decryptor.update(chunk))
 
         f_out.write(decryptor.finalize())
+    elapsed = time.perf_counter() - start
 
-    decryption_logger.info(f"Decrypted {enc_file.name}")
+    decryption_logger.info(f"Decrypted {enc_file.name} | time={elapsed:.2f}s")
     print(f"✔ Decrypted {enc_file.name}")
 
 
