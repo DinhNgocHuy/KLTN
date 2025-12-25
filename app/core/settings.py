@@ -100,6 +100,26 @@ FALLBACK_CONFIG = BASE_DIR / "config.json"
 # ============================================================
 # TERRAFORM → GET S3 BUCKET NAME
 # ============================================================
+# ============================================================
+# RUNTIME OVERRIDE (GUI)
+# ============================================================
+
+_RUNTIME_BUCKET_NAME = None
+
+def set_bucket_name(name: str):
+    """
+    Override S3 bucket name at runtime (used by GUI).
+    """
+    global _RUNTIME_BUCKET_NAME
+    _RUNTIME_BUCKET_NAME = name
+
+    # clear cached get_bucket_name()
+    try:
+        get_bucket_name.cache_clear()
+    except Exception:
+        pass
+# ============================================================
+
 
 @lru_cache(maxsize=1)
 def get_bucket_name():
@@ -110,6 +130,12 @@ def get_bucket_name():
         2. fallback config.json
     Bucket must exist in AWS.
     """
+    global _RUNTIME_BUCKET_NAME
+
+    # 0. GUI runtime override
+    if _RUNTIME_BUCKET_NAME:
+        return _RUNTIME_BUCKET_NAME
+    
     bucket_name = None
 
     # --- 1. Terraform output ---

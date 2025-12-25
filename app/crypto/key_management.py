@@ -51,9 +51,52 @@ def save_metadata(key_file: Path, metadata: dict):
     )
 
 # ============================================================
-# ROTATE RSA KEYS (ENVELOPE ROTATION)
+# ROTATE RSA KEYS - PROGRAMMATIC (for GUI)
+# ============================================================
+def rotate_keys_programmatic(password: str, delete_old_key: bool = False) -> bool:
+    """
+    Rotate RSA keys - SAME PASSWORD, NO PASSWORD CHANGE
+    """
+    key_logger.info("=== Starting RSA Key Rotation ===")
+    
+    try:
+        # Load current version
+        old_version = get_current_rsa_version()
+        old_private = load_private_key_by_version(old_version, password)
+
+        # Create new version (SAME PASSWORD)
+        new_version = f"v{int(old_version[1:]) + 1}"
+        generate_rsa_keys(password, new_version)  # Dùng CÙNG password
+        
+        new_private = load_private_key_by_version(new_version, password)
+        new_public = load_public_key_by_version(new_version)
+
+        # Rotate all AES keys
+        key_files = find_all_encrypted_keys()
+        for key_file in key_files:
+            # Decrypt with old, re-encrypt with new
+            encrypted_aes = Path(key_file).read_bytes()
+            aes_key = old_private.decrypt(encrypted_aes, ...)
+            new_encrypted_aes = new_public.encrypt(aes_key, ...)
+            Path(key_file).write_bytes(new_encrypted_aes)
+
+        # Update current version
+        update_current_rsa_version(new_version)
+        
+        key_logger.info("✓ RSA key rotation completed")
+        return True
+
+    except Exception as e:
+        error_logger.error(f"Key rotation failed: {e}")
+        return False
+
+# ============================================================
+# ROTATE RSA KEYS (ENVELOPE ROTATION) - CLI VERSION
 # ============================================================
 def rotate_keys(old_password: str):
+    """
+    Rotate RSA keys with CLI prompts (for command-line use)
+    """
     key_logger.info("=== Starting RSA Key Rotation ===")
     print("=== Starting RSA Key Rotation ===")
 
@@ -85,7 +128,7 @@ def rotate_keys(old_password: str):
     new_private = load_private_key_by_version(new_version, new_password)
     new_public = load_public_key_by_version(new_version)
 
-    print(f"✔ RSA keypair {new_version} generated.")
+    print(f"✓ RSA keypair {new_version} generated.")
 
     # --------------------------------------------------------
     # 3. Rotate all AES keys (re-wrap only)
@@ -153,11 +196,11 @@ def rotate_keys(old_password: str):
             )
 
             key_logger.info(f"Rotated AES key {key_file.name} → {new_version}")
-            print(f"✔ Rotated {key_file.name}")
+            print(f"✓ Rotated {key_file.name}")
 
         except Exception as e:
             error_logger.exception(f"Failed rotating {key_file.name}")
-            print(f"✖ Failed rotating {key_file.name}: {e}")
+            print(f"✗ Failed rotating {key_file.name}: {e}")
 
 
     # --------------------------------------------------------
@@ -192,7 +235,7 @@ if __name__ == "__main__":
 
         generate_rsa_keys(pw, "v1")
         set_current_rsa_version("v1")
-        print("✔ RSA keypair v1 created.")
+        print("✓ RSA keypair v1 created.")
         exit(0)
 
     if args.rotate:

@@ -1,26 +1,45 @@
-# --- Core Crypto ---
-cryptography>=42.0.0
+# =========================================================
+# CORE DEPENDENCIES
+# =========================================================
 
-# --- AWS SDK for S3 Upload/Download ---
-boto3>=1.34.0
-botocore>=1.34.0
+# Cryptography
+cryptography>=41.0.0
 
-# --- JSON, checksum, file utils (standard lib, no need to install) ---
+# AWS SDK
+boto3>=1.28.0
+botocore>=1.31.0
 
-# --- Optional: environment variable loader (if used) ---
-python-dotenv>=1.0.1
+# File watching
+watchdog>=3.0.0
 
-# --- GUI (Tkinter) ---
-# Tkinter is built-in on Windows. No package needed.
+# Scheduling
+schedule>=1.2.0
 
-# --- PyInstaller for building EXE ---
-pyinstaller>=6.2.0
+# =========================================================
+# GUI DEPENDENCIES
+# =========================================================
 
-# --- Logging enhancements (optional but recommended) ---
-colorlog>=6.8.0
+# Modern tkinter
+customtkinter>=5.2.0
 
-# --- Scheduler (if your scheduler module uses APScheduler) ---
-APScheduler>=3.10.4
+# Pillow for image support
+Pillow>=10.0.0
 
-# --- File system monitoring (if your app uses it) ---
-watchdog
+# =========================================================
+# BUILD TOOLS
+# =========================================================
+
+# PyInstaller for building executable
+pyinstaller>=6.0.0
+
+# =========================================================
+# DEVELOPMENT (Optional)
+# =========================================================
+
+# Code formatting
+# black>=23.0.0
+# flake8>=6.0.0
+
+# Testing
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
